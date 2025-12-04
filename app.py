@@ -10,7 +10,7 @@ from openpyxl.utils import get_column_letter
 # CONFIGURAÇÃO GERAL
 # ==========================================
 st.set_page_config(
-    page_title="Super Conciliador v3.1 (Status)",
+    page_title="Sistema de Conciliação de Saldos Financeios",
     layout="wide",
     page_icon="✅",
     initial_sidebar_state="expanded"
@@ -340,14 +340,13 @@ def to_excel(df):
 # ==========================================
 # 5. INTERFACE (PAINEL DE STATUS)
 # ==========================================
-st.title("💸 Super Conciliador v3.1 (Status Visual)")
-st.info("💡 Arraste os arquivos para as caixas abaixo. Se a caixa ficar vazia, o programa não roda.")
+st.title("Sistema de Conciliação de Saldos Financeiros")
 
 # PAINEL DE STATUS
-st.markdown("### 🚦 Status dos Arquivos")
+st.markdown("### Status dos Arquivos")
 col_cont1, col_cont2 = st.columns(2)
-with col_cont1: f_saldos = st.file_uploader("📂 1. Saldos Contábeis (Obrigatório)", type='csv')
-with col_cont2: f_rendim = st.file_uploader("📂 2. Rendimentos (Opcional)", type='csv')
+with col_cont1: f_saldos = st.file_uploader("📂 1. Saldos Contábeis (Relatório Flexvision 0113083)", type='csv')
+with col_cont2: f_rendim = st.file_uploader("📂 2. Rendimentos (Relatório Flexvision 014387)", type='csv')
 
 col_bb, col_caixa = st.columns(2)
 with col_bb:
