@@ -489,14 +489,14 @@ def to_pdf(df):
 # ==========================================
 # 6. INTERFACE DO USUÁRIO
 # ==========================================
-st.title("Sistema de Conciliação Contábil")
+st.title("Sistema de Conciliação Financeira")
 st.markdown("---")
 
 col_left, col_right = st.columns(2)
 
 with col_left:
     with st.container(border=True):
-        st.subheader("1. Arquivos Contábeis (ERP)")
+        st.subheader("1. Arquivos Contábeis (CSV)")
         f_saldos = st.file_uploader("Saldos (CSV)", type='csv')
         f_rendim = st.file_uploader("Rendimentos (CSV - Opcional)", type='csv')
 
