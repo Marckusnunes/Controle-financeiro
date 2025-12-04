@@ -9,16 +9,15 @@ from openpyxl.utils import get_column_letter
 # CONFIGURAÇÃO GERAL
 # ==========================================
 st.set_page_config(
-    page_title="Super Conciliador v3.0 (Checklist)",
+    page_title="Super Conciliador v3.1 (Status)",
     layout="wide",
-    page_icon="💸",
+    page_icon="✅",
     initial_sidebar_state="expanded"
 )
 
 # ==========================================
 # 1. FUNÇÕES DE LIMPEZA E FORMATAÇÃO
 # ==========================================
-
 def gerar_chave_padronizada(texto_conta):
     if not isinstance(texto_conta, str): return None
     texto_conta = texto_conta.strip()
@@ -39,7 +38,6 @@ def gerar_chave_padronizada(texto_conta):
     parte_numerica = re.sub(r'\D', '', texto_conta)
     if not parte_numerica: return None
     
-    # Retorna últimos 7 dígitos
     return parte_numerica[-7:].zfill(7)
 
 def limpar_valor_monetario(valor_str):
@@ -66,9 +64,8 @@ def formatar_moeda_br(valor):
     return f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 # ==========================================
-# 2. MOTOR DE LEITURA DE PDF (Blindado v2.9)
+# 2. MOTOR DE LEITURA DE PDF
 # ==========================================
-
 def extrair_pdf_melhorado(arquivo, tipo_extrato):
     try:
         doc = fitz.open(stream=arquivo.read(), filetype="pdf")
@@ -79,10 +76,8 @@ def extrair_pdf_melhorado(arquivo, tipo_extrato):
         
         linhas = texto_completo.split('\n')
         
-        # --- 1. CONTA ---
+        # --- CONTA ---
         conta_encontrada = "N/A"
-        
-        # Padrões explícitos
         padroes_conta = [
             r"Conta:\s*(\d{4}\/\d{3,4}\/[\d\-]+)", 
             r"Conta\s*Vinculada:\s*(\d{4}\/\d{3,4}\/[\d\-]+)", 
@@ -100,14 +95,12 @@ def extrair_pdf_melhorado(arquivo, tipo_extrato):
                     conta_encontrada = conta_raw
                     break
         
-        # Busca Desesperada (Padrão 99999-9 no topo)
         if conta_encontrada == "N/A":
-            cabecalho = "\n".join(linhas[:25]) # Aumentei range de busca
+            cabecalho = "\n".join(linhas[:25]) 
             match_solto = re.search(r"(\d{4,6}-\d)", cabecalho)
-            if match_solto:
-                conta_encontrada = match_solto.group(1)
+            if match_solto: conta_encontrada = match_solto.group(1)
 
-        # --- 2. VALORES ---
+        # --- VALORES ---
         saldo_final = 0.0
         rendimento_total = 0.0
         regex_valor = r"(\d{1,3}(?:\.\d{3})*,\d{2}|\d{1,3}(?:,\d{3})*\.\d{2})"
@@ -115,44 +108,32 @@ def extrair_pdf_melhorado(arquivo, tipo_extrato):
         for i, linha in enumerate(linhas):
             linha_upper = linha.upper().strip()
             
-            # --- SALDO ---
-            gatilhos_saldo = [
-                "SALDO FINAL", "SALDO TOTAL", "SALDO ATUAL", "SALDO EM", 
-                "SALDO LÍQUIDO", "SALDO LIQUIDO", "SALDO BRUTO", 
-                "VALOR LIQUIDO", "TOTAL DISPONIVEL", "POSICAO EM", "TOTAL EM COTAS",
-                "S A L D O"
-            ]
+            # SALDO
+            gatilhos_saldo = ["SALDO FINAL", "SALDO TOTAL", "SALDO ATUAL", "SALDO EM", "SALDO LÍQUIDO", "SALDO BRUTO", "VALOR LIQUIDO", "TOTAL DISPONIVEL", "POSICAO EM", "TOTAL EM COTAS", "S A L D O"]
             ignorar = ["ANTERIOR", "BLOQUEADO", "PROVISORIO", "RENDIMENTO", "RENTABILIDADE"]
             
             if any(g in linha_upper for g in gatilhos_saldo) and not any(ign in linha_upper for ign in ignorar):
-                # 1. Tenta na mesma linha
                 match_val = re.search(regex_valor, linha_upper)
                 if match_val:
                     sinal = "-" if " D" in linha_upper or "DEB" in linha_upper or "-" in linha_upper else ""
                     v = limpar_valor_monetario(f"{sinal}{match_val.group(0)}")
                     if v != 0: saldo_final = v
-                
-                # 2. Tenta na próxima linha
                 elif i + 1 < len(linhas):
                     match_prox = re.search(regex_valor, linhas[i+1])
                     if match_prox:
                         v = limpar_valor_monetario(match_prox.group(0))
                         if v != 0: saldo_final = v
 
-            # --- RENDIMENTOS ---
+            # RENDIMENTOS
             if tipo_extrato == 'INV':
                 gatilhos_rend = ["RENDIMENTO BRUTO", "RENTABILIDADE", "RENDIMENTO NO MÊS", "RENDIMENTO LIQUIDO", "RENTAB."]
-                
                 if any(g in linha_upper for g in gatilhos_rend) and "ACUMULADO" not in linha_upper and "ANO" not in linha_upper:
                     valor_capturado = 0.0
-                    
                     match_val = re.search(regex_valor, linha)
-                    if match_val:
-                        valor_capturado = limpar_valor_monetario(match_val.group(0))
+                    if match_val: valor_capturado = limpar_valor_monetario(match_val.group(0))
                     elif i + 1 < len(linhas):
                         match_prox = re.search(regex_valor, linhas[i+1])
-                        if match_prox:
-                            valor_capturado = limpar_valor_monetario(match_prox.group(0))
+                        if match_prox: valor_capturado = limpar_valor_monetario(match_prox.group(0))
                     
                     if valor_capturado != 0 and valor_capturado < 50000000:
                          rendimento_total += valor_capturado
@@ -166,14 +147,7 @@ def extrair_pdf_melhorado(arquivo, tipo_extrato):
             if match_last: saldo_final = limpar_valor_monetario(match_last[-1])
 
         texto_limpo = texto_completo[:300].replace('\n', ' ').replace(';', ',')
-
-        return {
-            "Conta": conta_encontrada,
-            "Saldo": saldo_final,
-            "Rendimento": rendimento_total,
-            "Texto_Raw": texto_limpo
-        }
-    
+        return {"Conta": conta_encontrada, "Saldo": saldo_final, "Rendimento": rendimento_total, "Texto_Raw": texto_limpo}
     except Exception as e:
         return {"Conta": "Erro", "Saldo": 0.0, "Rendimento": 0.0, "Texto_Raw": str(e)}
 
@@ -183,24 +157,19 @@ def extrair_pdf_melhorado(arquivo, tipo_extrato):
 def processar_contabil(arquivo, tipo='SALDO'):
     if arquivo is None: return pd.DataFrame()
     try:
-        # Tenta header=1
         df = pd.read_csv(arquivo, encoding='latin-1', sep=';', header=1, dtype=str)
         col_chave = None
         possiveis_chaves = ['Domicílio bancário', 'Conta', 'Nº Conta', 'Descrição', 'Conta Contabil']
         for col in df.columns:
             for p in possiveis_chaves:
-                if p.lower() in str(col).lower():
-                    col_chave = col; break
+                if p.lower() in str(col).lower(): col_chave = col; break
         
-        # Se falhar, tenta header=0
         if not col_chave:
             arquivo.seek(0)
             df = pd.read_csv(arquivo, encoding='latin-1', sep=';', header=0, dtype=str)
             for col in df.columns:
                 for p in possiveis_chaves:
-                    if p.lower() in str(col).lower():
-                        col_chave = col; break
-        
+                    if p.lower() in str(col).lower(): col_chave = col; break
         if not col_chave: return pd.DataFrame()
 
         col_valor = None
@@ -208,8 +177,7 @@ def processar_contabil(arquivo, tipo='SALDO'):
         for col in df.columns:
             if 'anterior' in str(col).lower(): continue
             for p in possiveis_valores:
-                if p.lower() in str(col).lower():
-                    col_valor = col; break
+                if p.lower() in str(col).lower(): col_valor = col; break
         if not col_valor: return pd.DataFrame()
 
         df['Chave Primaria'] = df[col_chave].apply(gerar_chave_padronizada)
@@ -273,18 +241,15 @@ def executar_processo(file_saldos, file_rendim, lista_extratos_cc, lista_extrato
         res = extrair_pdf_melhorado(f, 'CC')
         chave = gerar_chave_padronizada(res['Conta'])
         log_leitura.append({'Arquivo': f.name, 'Conta Lida': res['Conta'], 'Chave Gerada': str(chave), 'Saldo': res['Saldo'], 'Rendimento': 0.0, 'Tipo': 'CC', 'Raw': res['Texto_Raw']})
-        if chave: 
-            dados_banco.append({'Chave Primaria': chave, 'Saldo_Banco_CC': res['Saldo'], 'Saldo_Banco_Aplic': 0.0, 'Rendimento_Banco': 0.0})
+        if chave: dados_banco.append({'Chave Primaria': chave, 'Saldo_Banco_CC': res['Saldo'], 'Saldo_Banco_Aplic': 0.0, 'Rendimento_Banco': 0.0})
 
     for f in lista_extratos_inv:
         res = extrair_pdf_melhorado(f, 'INV')
         chave = gerar_chave_padronizada(res['Conta'])
         log_leitura.append({'Arquivo': f.name, 'Conta Lida': res['Conta'], 'Chave Gerada': str(chave), 'Saldo': res['Saldo'], 'Rendimento': res['Rendimento'], 'Tipo': 'INV', 'Raw': res['Texto_Raw']})
-        if chave: 
-            dados_banco.append({'Chave Primaria': chave, 'Saldo_Banco_CC': 0.0, 'Saldo_Banco_Aplic': res['Saldo'], 'Rendimento_Banco': res['Rendimento']})
+        if chave: dados_banco.append({'Chave Primaria': chave, 'Saldo_Banco_CC': 0.0, 'Saldo_Banco_Aplic': res['Saldo'], 'Rendimento_Banco': res['Rendimento']})
 
     df_log = pd.DataFrame(log_leitura)
-    
     if dados_banco:
         df_banco = pd.DataFrame(dados_banco).groupby('Chave Primaria').sum().reset_index()
     else:
@@ -292,21 +257,17 @@ def executar_processo(file_saldos, file_rendim, lista_extratos_cc, lista_extrato
 
     df_final = pd.merge(df_contabil, df_banco, on='Chave Primaria', how='outer').fillna(0)
 
-    if 'Descrição' in df_final.columns:
-        df_final['Descrição'] = df_final['Descrição'].fillna('CONTA SEM DESCRIÇÃO')
-    else:
-        df_final['Descrição'] = 'CONTA SEM DESCRIÇÃO'
+    if 'Descrição' in df_final.columns: df_final['Descrição'] = df_final['Descrição'].fillna('CONTA SEM DESCRIÇÃO')
+    else: df_final['Descrição'] = 'CONTA SEM DESCRIÇÃO'
 
     df_final['Diferenca_Saldo_CC'] = df_final['Saldo_Contabil_CC'] - df_final['Saldo_Banco_CC']
     df_final['Diferenca_Saldo_Aplic'] = df_final['Saldo_Contabil_Aplic'] - df_final['Saldo_Banco_Aplic']
     df_final['Diferenca_Rendimento'] = df_final['Rendimento_Contabil'] - df_final['Rendimento_Banco']
 
-    cols = ['Descrição', 'Chave Primaria', 
-            'Saldo_Contabil_CC', 'Saldo_Banco_CC', 'Diferenca_Saldo_CC',
+    cols = ['Descrição', 'Chave Primaria', 'Saldo_Contabil_CC', 'Saldo_Banco_CC', 'Diferenca_Saldo_CC',
             'Saldo_Contabil_Aplic', 'Saldo_Banco_Aplic', 'Diferenca_Saldo_Aplic',
             'Rendimento_Contabil', 'Rendimento_Banco', 'Diferenca_Rendimento']
     colunas_finais = [c for c in cols if c in df_final.columns]
-    
     return df_final[colunas_finais], df_log
 
 def to_excel(df):
@@ -314,50 +275,46 @@ def to_excel(df):
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=True) 
         ws = writer.sheets['Sheet1']
-        for i in range(1, 20):
-             ws.column_dimensions[get_column_letter(i)].width = 18
+        for i in range(1, 20): ws.column_dimensions[get_column_letter(i)].width = 18
     return output.getvalue()
 
 # ==========================================
-# 5. INTERFACE
+# 5. INTERFACE (PAINEL DE STATUS)
 # ==========================================
-st.title("💸 Super Conciliador v3.0 (Checklist)")
-st.markdown("### Verificação de Arquivos e Diagnóstico")
+st.title("💸 Super Conciliador v3.1 (Status Visual)")
+st.info("💡 Arraste os arquivos para as caixas abaixo. Se a caixa ficar vazia, o programa não roda.")
 
-st.markdown("---")
+# PAINEL DE STATUS
+st.markdown("### 🚦 Status dos Arquivos")
 col_cont1, col_cont2 = st.columns(2)
-with col_cont1: f_saldos = st.file_uploader("📂 Saldos (CSV)", type='csv')
-with col_cont2: f_rendim = st.file_uploader("📂 Rendimentos (CSV)", type='csv')
+with col_cont1: f_saldos = st.file_uploader("📂 1. Saldos Contábeis (Obrigatório)", type='csv')
+with col_cont2: f_rendim = st.file_uploader("📂 2. Rendimentos (Opcional)", type='csv')
 
-st.markdown("---")
 col_bb, col_caixa = st.columns(2)
 with col_bb:
-    st.subheader("🔵 Banco do Brasil")
-    f_bb_cc = st.file_uploader("BB - Conta Corrente", type='pdf', accept_multiple_files=True, key="bb_cc")
-    f_bb_inv = st.file_uploader("BB - Aplicações", type='pdf', accept_multiple_files=True, key="bb_inv")
+    f_bb_cc = st.file_uploader("🔵 BB - Conta Corrente", type='pdf', accept_multiple_files=True)
+    f_bb_inv = st.file_uploader("🔵 BB - Aplicações", type='pdf', accept_multiple_files=True)
 with col_caixa:
-    st.subheader("🟠 Caixa")
-    f_caixa_cc = st.file_uploader("Caixa - Conta Corrente", type='pdf', accept_multiple_files=True, key="cx_cc")
-    f_caixa_inv = st.file_uploader("Caixa - Aplicações", type='pdf', accept_multiple_files=True, key="cx_inv")
+    f_caixa_cc = st.file_uploader("🟠 Caixa - Conta Corrente", type='pdf', accept_multiple_files=True)
+    f_caixa_inv = st.file_uploader("🟠 Caixa - Aplicações", type='pdf', accept_multiple_files=True)
 
-# --- NOVO CHECKLIST VISUAL ---
-st.markdown("---")
+# LÓGICA DO STATUS
+tem_csv = f_saldos is not None
 tem_banco = (f_bb_cc or f_bb_inv or f_caixa_cc or f_caixa_inv)
 
-c1, c2, c3 = st.columns(3)
+c1, c2 = st.columns(2)
 with c1:
-    if f_saldos: st.success("✅ Saldos (CSV) OK")
-    else: st.error("❌ Faltando Saldos (CSV)")
+    if tem_csv: st.success("✅ CSV de Saldos Carregado")
+    else: st.error("❌ Faltando: Saldos (CSV)")
 with c2:
-    if tem_banco: st.success("✅ Extratos Bancários OK")
-    else: st.error("❌ Faltando Extratos")
-with c3:
-    st.write("Status: Pronto para Processar" if f_saldos and tem_banco else "Status: Aguardando Arquivos")
+    if tem_banco: st.success("✅ Pelo menos um PDF carregado")
+    else: st.error("❌ Faltando: Extratos Bancários")
 
-if st.button("Executar Diagnóstico", type="primary"):
-    if f_saldos and tem_banco:
+st.markdown("---")
+
+if st.button("Executar Conciliação", type="primary"):
+    if tem_csv and tem_banco:
         with st.spinner("Processando..."):
-            
             lista_final_cc = []
             if f_bb_cc: lista_final_cc.extend(f_bb_cc)
             if f_caixa_cc: lista_final_cc.extend(f_caixa_cc)
@@ -369,21 +326,15 @@ if st.button("Executar Diagnóstico", type="primary"):
             df_final, df_log = executar_processo(f_saldos, f_rendim, lista_final_cc, lista_final_inv)
             
             if not df_final.empty:
-                st.success("Análise concluída!")
+                st.balloons()
+                st.success("Sucesso!")
                 
                 df_display = df_final.copy()
                 mapa_colunas = {
-                    'Descrição': ('Dados', 'Descrição'),
-                    'Chave Primaria': ('Dados', 'Conta'),
-                    'Saldo_Contabil_CC': ('CONTA CORRENTE', 'Contabilidade'),
-                    'Saldo_Banco_CC': ('CONTA CORRENTE', 'Extrato Banco'),
-                    'Diferenca_Saldo_CC': ('CONTA CORRENTE', 'Diferença'),
-                    'Saldo_Contabil_Aplic': ('APLICAÇÃO', 'Contabilidade'),
-                    'Saldo_Banco_Aplic': ('APLICAÇÃO', 'Extrato Banco'),
-                    'Diferenca_Saldo_Aplic': ('APLICAÇÃO', 'Diferença'),
-                    'Rendimento_Contabil': ('RENDIMENTO', 'Contabilidade'),
-                    'Rendimento_Banco': ('RENDIMENTO', 'Extrato Banco'),
-                    'Diferenca_Rendimento': ('RENDIMENTO', 'Diferença')
+                    'Descrição': ('Dados', 'Descrição'), 'Chave Primaria': ('Dados', 'Conta'),
+                    'Saldo_Contabil_CC': ('CONTA CORRENTE', 'Contabilidade'), 'Saldo_Banco_CC': ('CONTA CORRENTE', 'Extrato Banco'), 'Diferenca_Saldo_CC': ('CONTA CORRENTE', 'Diferença'),
+                    'Saldo_Contabil_Aplic': ('APLICAÇÃO', 'Contabilidade'), 'Saldo_Banco_Aplic': ('APLICAÇÃO', 'Extrato Banco'), 'Diferenca_Saldo_Aplic': ('APLICAÇÃO', 'Diferença'),
+                    'Rendimento_Contabil': ('RENDIMENTO', 'Contabilidade'), 'Rendimento_Banco': ('RENDIMENTO', 'Extrato Banco'), 'Diferenca_Rendimento': ('RENDIMENTO', 'Diferença')
                 }
                 cols_existentes = [c for c in df_display.columns if c in mapa_colunas]
                 df_display = df_display[cols_existentes]
@@ -391,27 +342,18 @@ if st.button("Executar Diagnóstico", type="primary"):
                 
                 numeric_cols = df_display.select_dtypes(include=['float', 'int']).columns
                 df_formatado = df_display.copy()
-                for col in numeric_cols:
-                    df_formatado[col] = df_formatado[col].apply(formatar_moeda_br)
+                for col in numeric_cols: df_formatado[col] = df_formatado[col].apply(formatar_moeda_br)
 
-                tab1, tab2, tab3 = st.tabs(["📊 Resultado", "🚨 Divergências", "🕵️ Log (Crucial)"])
-                
+                tab1, tab2, tab3 = st.tabs(["📊 Resultado", "🚨 Divergências", "🕵️ Log"])
                 with tab1:
                     st.dataframe(df_formatado, use_container_width=True)
-                    st.download_button("Baixar Resultado", to_excel(df_display), "conciliacao_v3.xlsx")
-                
+                    st.download_button("Baixar Excel", to_excel(df_display), "conciliacao_final.xlsx")
                 with tab2:
-                    filtro = (df_final['Diferenca_Saldo_CC'].abs() > 0.01) | \
-                             (df_final['Diferenca_Saldo_Aplic'].abs() > 0.01) | \
-                             (df_final['Diferenca_Rendimento'].abs() > 0.01)
+                    filtro = (df_final['Diferenca_Saldo_CC'].abs() > 0.01) | (df_final['Diferenca_Saldo_Aplic'].abs() > 0.01) | (df_final['Diferenca_Rendimento'].abs() > 0.01)
                     df_div = df_formatado[filtro]
                     if df_div.empty: st.info("Sem divergências!")
                     else: st.dataframe(df_div, use_container_width=True)
-                
-                with tab3:
-                    st.dataframe(df_log)
-                    st.download_button("Baixar Log", df_log.to_csv(index=False, sep=';'), "log.csv")
-            else:
-                st.error("Erro crítico na geração da tabela.")
+                with tab3: st.dataframe(df_log)
+            else: st.error("Erro crítico: Tabela vazia.")
     else:
-        st.warning("Verifique o Checklist acima.")
+        st.warning("O botão só funciona se as caixas de status acima estiverem verdes ✅.")
