@@ -9,7 +9,7 @@ from openpyxl.utils import get_column_letter
 # CONFIGURAÇÃO GERAL
 # ==========================================
 st.set_page_config(
-    page_title="Super Conciliador v2.2 (Caixa Fix + Outer Join)",
+    page_title="Super Conciliador v2.3 (Separado por Banco)",
     layout="wide",
     page_icon="💸",
     initial_sidebar_state="expanded"
@@ -190,7 +190,7 @@ def processar_contabil(arquivo, tipo='SALDO'):
                 col_contabil = next(c for c in df.columns if 'contábil' in str(c).lower())
                 df_pivot = df.pivot_table(index='Chave Primaria', columns=col_contabil, values='Valor_Numerico', aggfunc='sum').reset_index()
                 
-                # CÓDIGOS CONTÁBEIS (Ajuste aqui se necessário)
+                # CÓDIGOS CONTÁBEIS
                 col_mov = next((c for c in df_pivot.columns if '111111901' in str(c) or 'Conta Movimento' in str(c)), None)
                 col_app = next((c for c in df_pivot.columns if '1111150' in str(c) or 'Aplicação' in str(c)), None)
                 
@@ -222,7 +222,7 @@ def processar_contabil(arquivo, tipo='SALDO'):
         return pd.DataFrame()
 
 # ==========================================
-# 4. CONSOLIDAÇÃO (ATUALIZADO)
+# 4. CONSOLIDAÇÃO (Lógica unificada)
 # ==========================================
 
 def executar_processo(file_saldos, file_rendim, lista_extratos_cc, lista_extratos_inv):
@@ -246,48 +246,42 @@ def executar_processo(file_saldos, file_rendim, lista_extratos_cc, lista_extrato
     dados_banco = []
     log_leitura = []
 
-    # Extratos CC
+    # Extratos CC (Itera sobre a lista unificada que recebeu BB + Caixa)
     for f in lista_extratos_cc:
         res = extrair_pdf_melhorado(f, 'CC')
         chave = gerar_chave_padronizada(res['Conta'])
         if chave:
             dados_banco.append({'Chave Primaria': chave, 'Saldo_Banco_CC': res['Saldo'], 'Saldo_Banco_Aplic': 0.0, 'Rendimento_Banco': 0.0})
-        log_leitura.append({'Arquivo': f.name, 'Conta Lida': res['Conta'], 'Chave Gerada': chave, 'Saldo': res['Saldo'], 'Tipo': 'CC', 'Raw': res['Texto_Raw']})
+        log_leitura.append({'Arquivo': f.name, 'Conta Lida': res['Conta'], 'Chave Gerada': chave, 'Saldo': res['Saldo'], 'Tipo': 'Conta Corrente', 'Raw': res['Texto_Raw']})
 
-    # Extratos Investimento
+    # Extratos Investimento (Itera sobre a lista unificada)
     for f in lista_extratos_inv:
         res = extrair_pdf_melhorado(f, 'INV')
         chave = gerar_chave_padronizada(res['Conta'])
         if chave:
             dados_banco.append({'Chave Primaria': chave, 'Saldo_Banco_CC': 0.0, 'Saldo_Banco_Aplic': res['Saldo'], 'Rendimento_Banco': res['Rendimento']})
-        log_leitura.append({'Arquivo': f.name, 'Conta Lida': res['Conta'], 'Chave Gerada': chave, 'Saldo_Aplic': res['Saldo'], 'Rendimento': res['Rendimento'], 'Tipo': 'INV', 'Raw': res['Texto_Raw']})
+        log_leitura.append({'Arquivo': f.name, 'Conta Lida': res['Conta'], 'Chave Gerada': chave, 'Saldo_Aplic': res['Saldo'], 'Rendimento': res['Rendimento'], 'Tipo': 'Investimento', 'Raw': res['Texto_Raw']})
 
     df_log = pd.DataFrame(log_leitura)
 
-    # Consolida Banco (CORREÇÃO DE ERRO SE LISTA VAZIA)
     if dados_banco:
         df_banco = pd.DataFrame(dados_banco).groupby('Chave Primaria').sum().reset_index()
     else:
-        # Cria dataframe vazio com estrutura correta para não quebrar o merge
         df_banco = pd.DataFrame(columns=['Chave Primaria', 'Saldo_Banco_CC', 'Saldo_Banco_Aplic', 'Rendimento_Banco'])
 
-    # Cruzamento Final (ALTERADO PARA OUTER JOIN)
-    # Isso garante que contas que só existem no Banco OU só no CSV apareçam
+    # Cruzamento Final
     df_final = pd.merge(df_contabil, df_banco, on='Chave Primaria', how='outer').fillna(0)
 
-    # Tratamento da coluna Descrição para contas que só vieram do Banco (não tem descrição no CSV)
     if 'Descrição' in df_final.columns:
         df_final['Descrição'] = df_final['Descrição'].replace(0, 'CONTA NÃO LOCALIZADA NO CSV')
         df_final['Descrição'] = df_final['Descrição'].fillna('CONTA NÃO LOCALIZADA NO CSV')
     else:
         df_final['Descrição'] = 'CONTA NÃO LOCALIZADA NO CSV'
 
-    # Diferenças
     df_final['Diferenca_Saldo_CC'] = df_final['Saldo_Contabil_CC'] - df_final['Saldo_Banco_CC']
     df_final['Diferenca_Saldo_Aplic'] = df_final['Saldo_Contabil_Aplic'] - df_final['Saldo_Banco_Aplic']
     df_final['Diferenca_Rendimento'] = df_final['Rendimento_Contabil'] - df_final['Rendimento_Banco']
 
-    # Organização de Colunas
     cols = ['Descrição', 'Chave Primaria', 
             'Saldo_Contabil_CC', 'Saldo_Banco_CC', 'Diferenca_Saldo_CC',
             'Saldo_Contabil_Aplic', 'Saldo_Banco_Aplic', 'Diferenca_Saldo_Aplic',
@@ -306,54 +300,87 @@ def to_excel(df):
     return output.getvalue()
 
 # ==========================================
-# 5. INTERFACE
+# 5. INTERFACE (DIVIDIDA)
 # ==========================================
 
-st.title("💸 Super Conciliador v2.2")
-st.markdown("### Suporte a Caixa (Ag/Op/Conta) e BB Integrado")
+st.title("💸 Super Conciliador v2.3")
+st.markdown("### Suporte a Caixa e BB (Separação Total de Arquivos)")
 
-col1, col2 = st.columns(2)
-with col1:
-    st.subheader("1. Contabilidade")
-    f_saldos = st.file_uploader("Arquivo de Saldos (CSV)", type='csv')
-    f_rendim = st.file_uploader("Arquivo de Rendimentos (CSV)", type='csv')
+# Área de Upload da Contabilidade
+st.markdown("---")
+st.header("1. Arquivos da Contabilidade")
+col_cont1, col_cont2 = st.columns(2)
+with col_cont1:
+    f_saldos = st.file_uploader("📂 Saldos Contábeis (CSV)", type='csv')
+with col_cont2:
+    f_rendim = st.file_uploader("📂 Rendimentos (CSV)", type='csv')
 
-with col2:
-    st.subheader("2. Extratos Bancários")
-    f_cc = st.file_uploader("Conta Corrente (BB e Caixa)", type='pdf', accept_multiple_files=True)
-    f_inv = st.file_uploader("Investimentos (BB e Caixa)", type='pdf', accept_multiple_files=True)
+# Área de Upload dos Bancos
+st.markdown("---")
+st.header("2. Extratos Bancários")
 
+col_bb, col_caixa = st.columns(2)
+
+# Coluna BB
+with col_bb:
+    st.subheader("🔵 Banco do Brasil")
+    st.markdown("Carregue os arquivos separadamente:")
+    f_bb_cc = st.file_uploader("BB - Conta Corrente", type='pdf', accept_multiple_files=True, key="bb_cc")
+    f_bb_inv = st.file_uploader("BB - Aplicações/Invest", type='pdf', accept_multiple_files=True, key="bb_inv")
+
+# Coluna Caixa
+with col_caixa:
+    st.subheader("🟠 Caixa Econômica")
+    st.markdown("Carregue os arquivos separadamente:")
+    f_caixa_cc = st.file_uploader("Caixa - Conta Corrente", type='pdf', accept_multiple_files=True, key="cx_cc")
+    f_caixa_inv = st.file_uploader("Caixa - Aplicações/Invest", type='pdf', accept_multiple_files=True, key="cx_inv")
+
+# Botão de Ação
+st.markdown("---")
 if st.button("Executar Conciliação", type="primary"):
-    if f_saldos and (f_cc or f_inv):
-        with st.spinner("Processando..."):
-            df_final, df_log = executar_processo(f_saldos, f_rendim, f_cc if f_cc else [], f_inv if f_inv else [])
+    
+    # Verifica se tem arquivos mínimos (Contabilidade + Algum Banco)
+    tem_banco = (f_bb_cc or f_bb_inv or f_caixa_cc or f_caixa_inv)
+    
+    if f_saldos and tem_banco:
+        with st.spinner("Unificando arquivos e processando..."):
+            
+            # Unifica as listas de CC (BB + Caixa) para enviar ao processador
+            lista_final_cc = []
+            if f_bb_cc: lista_final_cc.extend(f_bb_cc)
+            if f_caixa_cc: lista_final_cc.extend(f_caixa_cc)
+            
+            # Unifica as listas de INV (BB + Caixa) para enviar ao processador
+            lista_final_inv = []
+            if f_bb_inv: lista_final_inv.extend(f_bb_inv)
+            if f_caixa_inv: lista_final_inv.extend(f_caixa_inv)
+            
+            # Executa
+            df_final, df_log = executar_processo(f_saldos, f_rendim, lista_final_cc, lista_final_inv)
             
             if not df_final.empty:
                 st.success("Processamento concluído!")
                 
-                tab1, tab2, tab3 = st.tabs(["📊 Resultado", "⚠️ Divergências", "🕵️ Raio-X"])
+                tab1, tab2, tab3 = st.tabs(["📊 Resultado Geral", "⚠️ Apenas Divergências", "🕵️ Log de Leitura"])
                 
                 with tab1:
                     st.dataframe(df_final.style.format("{:,.2f}"))
-                    st.download_button("Baixar Excel", to_excel(df_final), "conciliacao_final.xlsx")
+                    st.download_button("Baixar Excel Completo", to_excel(df_final), "conciliacao_final.xlsx")
                 
                 with tab2:
-                    # Filtra divergências maiores que 1 centavo
                     div = df_final[
                         (df_final['Diferenca_Saldo_CC'].abs() > 0.01) | 
                         (df_final['Diferenca_Saldo_Aplic'].abs() > 0.01) |
                         (df_final['Diferenca_Rendimento'].abs() > 0.01)
                     ]
-                    if div.empty: st.info("Sem divergências materiais encontradas!")
+                    if div.empty: st.info("Tudo bateu! Sem divergências.")
                     else: st.dataframe(div.style.format("{:,.2f}"))
                 
                 with tab3:
+                    st.write("Verifique aqui se todos os arquivos carregados foram lidos corretamente:")
                     st.dataframe(df_log)
             else:
-                st.error("Ocorreu um erro ou não há dados correspondentes.")
+                st.error("Erro: Não foi possível gerar a tabela final. Verifique o Log.")
                 st.dataframe(df_log)
     else:
-        st.warning("Carregue o arquivo de Saldos (CSV) e pelo menos um extrato bancário.")
-
-st.markdown("---")
-st.info("Nota: Os extratos devem estar separados por banco e tipo. O sistema usa os **últimos 7 dígitos** da conta para o cruzamento.")
+        st.warning("⚠️ Atenção: Você precisa carregar o arquivo de Saldos (CSV) e pelo menos um extrato bancário (BB ou Caixa).")
