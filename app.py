@@ -497,8 +497,8 @@ col_left, col_right = st.columns(2)
 with col_left:
     with st.container(border=True):
         st.subheader("1. Arquivos Contábeis (CSV)")
-        f_saldos = st.file_uploader("Saldos (CSV)", type='csv')
-        f_rendim = st.file_uploader("Rendimentos (CSV)", type='csv')
+        f_saldos = st.file_uploader("Conta corrente (.CSV) - Relatório Flexvision 0113083", type='csv')
+        f_rendim = st.file_uploader("Rendimentos (.CSV) - Relatório Flexvision 014387", type='csv')
 
 with col_right:
     with st.container(border=True):
