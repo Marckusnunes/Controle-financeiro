@@ -7,7 +7,7 @@ import fitz  # PyMuPDF
 from openpyxl.utils import get_column_letter
 
 # ==========================================
-# CONFIGURAÇÃO GERAL (Layout Profissional)
+# CONFIGURAÇÃO GERAL
 # ==========================================
 st.set_page_config(
     page_title="Conciliação Contábil",
@@ -16,7 +16,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Estilo CSS
 st.markdown("""
     <style>
         .block-container {padding-top: 2rem; padding-bottom: 2rem;}
@@ -33,7 +32,6 @@ def gerar_chave_padronizada(texto_conta):
     if not isinstance(texto_conta, str): return None
     texto_conta = texto_conta.strip()
     
-    # Lógica Contábil
     if '.' in texto_conta and len(texto_conta) > 12:
         partes = texto_conta.split('.')
         maior_parte = ""
@@ -41,8 +39,6 @@ def gerar_chave_padronizada(texto_conta):
             limpo = re.sub(r'\D', '', p)
             if len(limpo) > len(maior_parte): maior_parte = limpo
         if len(maior_parte) > 4: texto_conta = maior_parte
-
-    # Lógica Caixa (Ag/Op/Conta)
     elif '/' in texto_conta:
         texto_conta = texto_conta.split('/')[-1]
             
@@ -87,7 +83,6 @@ def extrair_pdf_melhorado(arquivo, tipo_extrato):
         
         linhas = texto_completo.split('\n')
         
-        # --- CONTA ---
         conta_encontrada = "N/A"
         padroes_conta = [
             r"Conta:\s*(\d{4}\/\d{3,4}\/[\d\-]+)", 
@@ -111,7 +106,6 @@ def extrair_pdf_melhorado(arquivo, tipo_extrato):
             match_solto = re.search(r"(\d{4,6}-\d)", cabecalho)
             if match_solto: conta_encontrada = match_solto.group(1)
 
-        # --- VALORES ---
         saldo_final = 0.0
         rendimento_total = 0.0
         regex_valor = r"(\d{1,3}(?:\.\d{3})*,\d{2}|\d{1,3}(?:,\d{3})*\.\d{2})"
@@ -119,7 +113,6 @@ def extrair_pdf_melhorado(arquivo, tipo_extrato):
         for i, linha in enumerate(linhas):
             linha_upper = linha.upper().strip()
             
-            # SALDO
             gatilhos_saldo = ["SALDO FINAL", "SALDO TOTAL", "SALDO ATUAL", "SALDO EM", "SALDO LÍQUIDO", "SALDO BRUTO", "VALOR LIQUIDO", "TOTAL DISPONIVEL", "POSICAO EM", "TOTAL EM COTAS", "S A L D O"]
             ignorar = ["ANTERIOR", "BLOQUEADO", "PROVISORIO", "RENDIMENTO", "RENTABILIDADE"]
             
@@ -135,7 +128,6 @@ def extrair_pdf_melhorado(arquivo, tipo_extrato):
                         v = limpar_valor_monetario(match_prox.group(0))
                         if v != 0: saldo_final = v
 
-            # RENDIMENTOS
             if tipo_extrato == 'INV':
                 gatilhos_rend = ["RENDIMENTO BRUTO", "RENTABILIDADE", "RENDIMENTO NO MÊS", "RENDIMENTO LIQUIDO", "RENTAB."]
                 if any(g in linha_upper for g in gatilhos_rend) and "ACUMULADO" not in linha_upper and "ANO" not in linha_upper:
@@ -163,17 +155,10 @@ def extrair_pdf_melhorado(arquivo, tipo_extrato):
         return {"Conta": "Erro", "Saldo": 0.0, "Rendimento": 0.0, "Texto_Raw": str(e)}
 
 def carregar_depara():
-    """Carrega o arquivo DE-PARA e padroniza as chaves."""
     diretorio_atual = os.path.dirname(os.path.abspath(__file__))
     caminho_arquivo = os.path.join(diretorio_atual, "depara", "DEPARA_CONTAS BANCÁRIAS_CEF.xlsx")
-
     try:
-        df_depara = pd.read_excel(
-            caminho_arquivo,
-            sheet_name="2025_JUNHO (2)",
-            dtype=str,
-            engine='openpyxl'
-        )
+        df_depara = pd.read_excel(caminho_arquivo, sheet_name="2025_JUNHO (2)", dtype=str, engine='openpyxl')
         df_depara.columns = ['Conta Antiga', 'Conta Nova']
         if 'gerar_chave_padronizada' in globals():
             df_depara['Chave Antiga'] = df_depara['Conta Antiga'].apply(gerar_chave_padronizada)
@@ -217,7 +202,6 @@ def processar_contabil(arquivo, tipo='SALDO'):
         df = df.dropna(subset=['Chave Primaria'])
         df['Valor_Numerico'] = df[col_valor].astype(str).apply(limpar_valor_monetario)
         
-        # Identificação de Coluna de Descrição (Fallback)
         col_desc_original = col_chave 
         for col in df.columns:
             if ('descri' in str(col).lower() or 'nome' in str(col).lower()) and col != col_chave:
@@ -259,25 +243,37 @@ def processar_contabil(arquivo, tipo='SALDO'):
         return pd.DataFrame()
 
 # ==========================================
-# 4. CONSOLIDAÇÃO E DE-PARA
+# 4. CONSOLIDAÇÃO, DE-PARA E CLASSIFICAÇÃO
 # ==========================================
 def identificar_banco_por_texto(row):
     """
-    Tenta descobrir o banco pela descrição do CSV se o PDF não foi encontrado.
+    Define a descrição final do Banco.
+    Ordem de Prioridade:
+    1. Nome vindo do PDF (Extrato identificado).
+    2. Palavras-chave na descrição do ERP (BRASIL/CAIXA).
+    3. Códigos bancários na descrição (001 = BB, 104 = Caixa).
     """
-    # 1. Se já tem nome do banco vindo do PDF, mantém
+    # 1. Se veio do PDF, já temos certeza
     if pd.notna(row.get('Nome_Banco')) and str(row.get('Nome_Banco')) not in ['0', '0.0', 'nan', 'None']:
         return str(row['Nome_Banco']).upper()
     
-    # 2. Se não tem PDF, tenta achar pistas na Descrição do ERP
+    # Prepara texto do ERP para análise
     desc = str(row.get('Descrição_ERP', '')).upper()
     
-    if 'BRASIL' in desc or 'BB ' in desc or 'BCO' in desc:
-        return "BANCO DO BRASIL (SÓ NO ERP)"
-    elif 'CAIXA' in desc or 'CEF' in desc or 'FEDERAL' in desc:
-        return "CAIXA ECONÔMICA (SÓ NO ERP)"
+    # 2. Busca por palavras-chave explícitas
+    if 'BRASIL' in desc or 'BB ' in desc or 'BCO DO BRASIL' in desc:
+        return "BANCO DO BRASIL"
+    elif 'CAIXA' in desc or 'CEF' in desc or 'FEDERAL' in desc or 'ECONÔMICA' in desc:
+        return "CAIXA ECONÔMICA"
     
-    # 3. Se não achou pista nenhuma
+    # 3. Busca por CÓDIGOS BANCÁRIOS (Critério complementar solicitado)
+    # Verifica se "001" ou "104" estão presentes na string
+    if '001' in desc:
+        return "BANCO DO BRASIL"
+    if '104' in desc:
+        return "CAIXA ECONÔMICA"
+    
+    # Se nada funcionar, retorna a descrição original
     return desc
 
 def executar_processo(file_saldos, file_rendim, lista_arquivos_bancarios):
@@ -350,9 +346,12 @@ def executar_processo(file_saldos, file_rendim, lista_arquivos_bancarios):
     # 5. Consolidação Final
     df_final = pd.merge(df_contabil, df_banco, on='Chave Primaria', how='outer').fillna(0)
 
-    # --- NOVA LÓGICA: Aplica a identificação inteligente do banco ---
+    # --- APLICA A NOVA LÓGICA DE IDENTIFICAÇÃO ---
     df_final['Descrição'] = df_final.apply(identificar_banco_por_texto, axis=1)
-    # ---------------------------------------------------------------
+    # ---------------------------------------------
+    
+    # Padronização final
+    df_final['Descrição'] = df_final['Descrição'].astype(str).str.upper().replace(['NAN', 'NONE', '0', ''], '-')
 
     df_final['Diferenca_Saldo_CC'] = df_final['Saldo_Contabil_CC'] - df_final['Saldo_Banco_CC']
     df_final['Diferenca_Saldo_Aplic'] = df_final['Saldo_Contabil_Aplic'] - df_final['Saldo_Banco_Aplic']
