@@ -9,55 +9,48 @@ from openpyxl.utils import get_column_letter
 # CONFIGURAÇÃO GERAL
 # ==========================================
 st.set_page_config(
-    page_title="Super Conciliador v2.6 (Visual Pro)",
+    page_title="Super Conciliador v2.7 (Investimentos Fix)",
     layout="wide",
     page_icon="💸",
     initial_sidebar_state="expanded"
 )
 
 # ==========================================
-# 1. FUNÇÕES DE LIMPEZA E CHAVES
+# 1. FUNÇÕES DE LIMPEZA E FORMATAÇÃO
 # ==========================================
 
 def gerar_chave_padronizada(texto_conta):
-    """
-    Padroniza a chave tentando ser inteligente com códigos contábeis longos.
-    """
-    if not isinstance(texto_conta, str):
-        return None
-    
+    if not isinstance(texto_conta, str): return None
     texto_conta = texto_conta.strip()
     
-    # 1. Lógica para Códigos Contábeis Longos
+    # Lógica Códigos Longos (Contabilidade)
     if '.' in texto_conta and len(texto_conta) > 15:
         partes = texto_conta.split('.')
         maior_parte = ""
         for p in partes:
             limpo = re.sub(r'\D', '', p)
-            if len(limpo) > len(maior_parte):
-                maior_parte = limpo
-        if len(maior_parte) > 4:
-            texto_conta = maior_parte
+            if len(limpo) > len(maior_parte): maior_parte = limpo
+        if len(maior_parte) > 4: texto_conta = maior_parte
 
-    # 2. Lógica Padrão
+    # Lógica Padrão (Caixa)
     elif '/' in texto_conta:
         texto_conta = texto_conta.split('/')[-1]
             
-    # 3. Limpeza Final
     parte_numerica = re.sub(r'\D', '', texto_conta)
-    
     if not parte_numerica: return None
-        
-    ultimos_7_digitos = parte_numerica[-7:]
-    return ultimos_7_digitos.zfill(7)
+    return parte_numerica[-7:].zfill(7)
 
 def limpar_valor_monetario(valor_str):
     if not isinstance(valor_str, str): return 0.0
     valor_upper = valor_str.upper()
     eh_negativo = 'D' in valor_upper or '-' in valor_str or 'DEB' in valor_upper
+    
+    # Remove tudo que não é dígito, vírgula ou ponto
     limpo = re.sub(r'[^\d,\.]', '', valor_str)
+    
     try:
         if not limpo: return 0.0
+        # Lógica BR: Se tem virgula e ponto, remove ponto. Se só tem virgula, troca por ponto.
         if ',' in limpo and '.' in limpo:
              limpo = limpo.replace('.', '').replace(',', '.')
         elif ',' in limpo:
@@ -69,12 +62,11 @@ def limpar_valor_monetario(valor_str):
         return 0.0
 
 def formatar_moeda_br(valor):
-    """Formata float para string BRL: 1.234,56"""
     if pd.isna(valor): return "0,00"
     return f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 # ==========================================
-# 2. MOTOR DE LEITURA DE PDF
+# 2. MOTOR DE LEITURA DE PDF (ATUALIZADO v2.7)
 # ==========================================
 
 def extrair_pdf_melhorado(arquivo, tipo_extrato):
@@ -85,7 +77,7 @@ def extrair_pdf_melhorado(arquivo, tipo_extrato):
             texto_completo += pag.get_text() + "\n"
         doc.close()
         
-        # --- CONTA ---
+        # --- 1. CONTA ---
         conta_encontrada = "N/A"
         padroes_conta = [
             r"Conta:\s*(\d{4}\/\d{3,4}\/[\d\-]+)", 
@@ -102,50 +94,79 @@ def extrair_pdf_melhorado(arquivo, tipo_extrato):
                     conta_encontrada = conta_raw
                     break
         
-        # --- VALORES ---
+        # --- 2. VALORES (Lógica Próxima Linha) ---
         saldo_final = 0.0
         rendimento_total = 0.0
         linhas = texto_completo.split('\n')
         
-        for linha in linhas:
+        # Regex para capturar valor monetário (suporta formato 1.000,00 e 1000.00)
+        regex_valor = r"(\d{1,3}(?:\.\d{3})*,\d{2}|\d{1,3}(?:,\d{3})*\.\d{2})"
+
+        for i, linha in enumerate(linhas):
             linha_upper = linha.upper().strip()
             
-            gatilhos_saldo = ["SALDO FINAL", "SALDO TOTAL", "SALDO ATUAL", "SALDO EM", "SALDO LÍQUIDO", "SALDO BRUTO", "VALOR LIQUIDO", "TOTAL DISPONIVEL", "POSICAO EM"]
+            # -- SALDO --
+            gatilhos_saldo = [
+                "SALDO FINAL", "SALDO TOTAL", "SALDO ATUAL", "SALDO EM", 
+                "SALDO LÍQUIDO", "SALDO LIQUIDO", "SALDO BRUTO", 
+                "VALOR LIQUIDO", "TOTAL DISPONIVEL", "POSICAO EM", "TOTAL EM COTAS"
+            ]
             ignorar = ["ANTERIOR", "BLOQUEADO", "PROVISORIO", "RENDIMENTO"]
             
-            if any(g in linha_upper for g in gatilhos_saldo) and not any(i in linha_upper for i in ignorar):
-                match_val = re.search(r"(\d{1,3}(?:\.\d{3})*,\d{2})([CD]?)", linha_upper)
+            # Se a linha tem um gatilho de saldo e NÃO tem palavras ignoradas
+            if any(g in linha_upper for g in gatilhos_saldo) and not any(ign in linha_upper for ign in ignorar):
+                
+                # Tenta achar o valor na MESMA linha
+                match_val = re.search(regex_valor, linha_upper)
+                
                 if match_val:
-                    valor_str = match_val.group(1)
-                    letra = match_val.group(2)
-                    sinal = "D" if letra == 'D' or " D" in linha_upper or "DEB" in linha_upper else "C"
-                    v = limpar_valor_monetario(f"{valor_str} {sinal}")
+                    # Achou na mesma linha
+                    raw_val = match_val.group(0)
+                    # Verifica sinal negativo/Debito na mesma linha
+                    sinal = "D" if " D" in linha_upper or "DEB" in linha_upper or "-" in linha_upper else "C"
+                    v = limpar_valor_monetario(f"{raw_val} {sinal}")
                     if v != 0: saldo_final = v
+                
+                else:
+                    # NÃO achou na mesma linha -> Tenta olhar a PRÓXIMA linha
+                    # Isso resolve casos onde o PDF quebra: "Saldo Atual =" [enter] "100,00"
+                    if i + 1 < len(linhas):
+                        linha_prox = linhas[i+1].upper().strip()
+                        match_prox = re.search(regex_valor, linha_prox)
+                        if match_prox:
+                            raw_val = match_prox.group(0)
+                            v = limpar_valor_monetario(raw_val) # Assume Crédito/Positivo se estiver sozinho na linha
+                            if v != 0: saldo_final = v
 
+            # -- RENDIMENTO (Investimentos) --
             if tipo_extrato == 'INV':
                 gatilhos_rend = ["RENDIMENTO BRUTO", "RENTABILIDADE", "RENDIMENTO NO MÊS", "RENDIMENTO LIQUIDO"]
                 if any(g in linha_upper for g in gatilhos_rend) and "ACUMULADO" not in linha_upper:
-                    match_val = re.search(r"(\d{1,3}(?:\.\d{3})*,\d{2})", linha)
+                    match_val = re.search(regex_valor, linha)
                     if match_val:
-                        valor = limpar_valor_monetario(match_val.group(1))
+                        valor = limpar_valor_monetario(match_val.group(0))
                         if valor < 100000000: rendimento_total += valor
 
+        # Fallback 1: Contas sem movimento
         if saldo_final == 0.0 and ("NAO HOUVE MOVIMENTO" in texto_completo.upper() or "SEM MOVIMENTO" in texto_completo.upper()):
              match_ant = re.search(r"(?:SALDO ANTERIOR|SALDO).*?(\d{1,3}(?:\.\d{3})*,\d{2})", texto_completo, re.IGNORECASE | re.DOTALL)
              if match_ant: saldo_final = limpar_valor_monetario(match_ant.group(1))
 
+        # Fallback 2: Busca genérica por TOTAL no fim do arquivo (comum em fundos)
         if saldo_final == 0.0 and tipo_extrato == 'INV':
-            match_last = re.findall(r"(?:TOTAL|SALDO).*?(\d{1,3}(?:\.\d{3})*,\d{2})", texto_completo, re.IGNORECASE)
-            if match_last: saldo_final = limpar_valor_monetario(match_last[-1])
+            # Procura qualquer valor monetário após a palavra TOTAL ou SALDO
+            match_last = re.findall(r"(?:TOTAL|SALDO|ATUAL).*?(\d{1,3}(?:\.\d{3})*,\d{2})", texto_completo, re.IGNORECASE)
+            if match_last: 
+                saldo_final = limpar_valor_monetario(match_last[-1])
 
         return {"Conta": conta_encontrada, "Saldo": saldo_final, "Rendimento": rendimento_total, "Texto_Raw": texto_completo[:300]}
+    
     except Exception as e:
         return {"Conta": "Erro", "Saldo": 0.0, "Rendimento": 0.0, "Texto_Raw": str(e)}
 
 # ==========================================
 # 3. LEITURA CONTÁBIL
 # ==========================================
-
 def processar_contabil(arquivo, tipo='SALDO'):
     if arquivo is None: return pd.DataFrame()
     try:
@@ -164,7 +185,6 @@ def processar_contabil(arquivo, tipo='SALDO'):
                 for p in possiveis_chaves:
                     if p.lower() in str(col).lower():
                         col_chave = col; break
-        
         if not col_chave: return pd.DataFrame()
 
         col_valor = None
@@ -174,7 +194,6 @@ def processar_contabil(arquivo, tipo='SALDO'):
             for p in possiveis_valores:
                 if p.lower() in str(col).lower():
                     col_valor = col; break
-        
         if not col_valor: return pd.DataFrame()
 
         df['Chave Primaria'] = df[col_chave].apply(gerar_chave_padronizada)
@@ -217,7 +236,6 @@ def processar_contabil(arquivo, tipo='SALDO'):
 # ==========================================
 # 4. CONSOLIDAÇÃO
 # ==========================================
-
 def executar_processo(file_saldos, file_rendim, lista_extratos_cc, lista_extratos_inv):
     df_saldos = processar_contabil(file_saldos, 'SALDO')
     df_rendim = processar_contabil(file_rendim, 'RENDIMENTO')
@@ -265,7 +283,6 @@ def executar_processo(file_saldos, file_rendim, lista_extratos_cc, lista_extrato
     df_final['Diferenca_Saldo_Aplic'] = df_final['Saldo_Contabil_Aplic'] - df_final['Saldo_Banco_Aplic']
     df_final['Diferenca_Rendimento'] = df_final['Rendimento_Contabil'] - df_final['Rendimento_Banco']
 
-    # --- REORDENAR E FILTRAR COLUNAS ---
     cols = ['Descrição', 'Chave Primaria', 
             'Saldo_Contabil_CC', 'Saldo_Banco_CC', 'Diferenca_Saldo_CC',
             'Saldo_Contabil_Aplic', 'Saldo_Banco_Aplic', 'Diferenca_Saldo_Aplic',
@@ -277,7 +294,7 @@ def executar_processo(file_saldos, file_rendim, lista_extratos_cc, lista_extrato
 def to_excel(df):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=True) # Index true porque vamos usar MultiIndex
+        df.to_excel(writer, index=True) 
         ws = writer.sheets['Sheet1']
         for i in range(1, 20):
              ws.column_dimensions[get_column_letter(i)].width = 18
@@ -286,9 +303,8 @@ def to_excel(df):
 # ==========================================
 # 5. INTERFACE (VISUAL PRO)
 # ==========================================
-
-st.title("💸 Super Conciliador v2.6 (Visual Pro)")
-st.markdown("### Suporte a Caixa e BB (Agrupamento Visual e Formatação BR)")
+st.title("💸 Super Conciliador v2.7 (Investimentos Fix)")
+st.markdown("### Suporte a Caixa, BB e Correção de Linhas Quebradas")
 
 st.markdown("---")
 st.header("1. Arquivos da Contabilidade")
@@ -310,12 +326,9 @@ with col_caixa:
 
 st.markdown("---")
 if st.button("Executar Conciliação", type="primary"):
-    
     tem_banco = (f_bb_cc or f_bb_inv or f_caixa_cc or f_caixa_inv)
-    
     if f_saldos and tem_banco:
         with st.spinner("Processando..."):
-            
             lista_final_cc = []
             if f_bb_cc: lista_final_cc.extend(f_bb_cc)
             if f_caixa_cc: lista_final_cc.extend(f_caixa_cc)
@@ -329,11 +342,7 @@ if st.button("Executar Conciliação", type="primary"):
             if not df_final.empty:
                 st.success("Conciliação Realizada!")
                 
-                # --- PREPARAÇÃO VISUAL (MULTI-INDEX) ---
-                # Criamos um novo DataFrame só para exibição bonita
                 df_display = df_final.copy()
-                
-                # Mapa de Renomeação para criar Hierarquia
                 mapa_colunas = {
                     'Descrição': ('Dados', 'Descrição'),
                     'Chave Primaria': ('Dados', 'Conta Reduzida'),
@@ -347,23 +356,15 @@ if st.button("Executar Conciliação", type="primary"):
                     'Rendimento_Banco': ('RENDIMENTO', 'Extrato Banco'),
                     'Diferenca_Rendimento': ('RENDIMENTO', 'Diferença')
                 }
-                
-                # Filtra colunas que realmente existem
                 cols_existentes = [c for c in df_display.columns if c in mapa_colunas]
                 df_display = df_display[cols_existentes]
-                
-                # Aplica o MultiIndex nas colunas
                 df_display.columns = pd.MultiIndex.from_tuples([mapa_colunas[c] for c in df_display.columns])
                 
-                # Identifica colunas numéricas para aplicar a função BR
                 numeric_cols = df_display.select_dtypes(include=['float', 'int']).columns
-                
-                # Aplica formatação BR
                 df_formatado = df_display.copy()
                 for col in numeric_cols:
                     df_formatado[col] = df_formatado[col].apply(formatar_moeda_br)
 
-                # --- EXIBIÇÃO ---
                 tab1, tab2, tab3 = st.tabs(["📊 Tabela Formatada", "⚠️ Divergências", "🕵️ Log"])
                 
                 with tab1:
@@ -371,11 +372,9 @@ if st.button("Executar Conciliação", type="primary"):
                     st.download_button("Baixar Excel", to_excel(df_display), "conciliacao_pro.xlsx")
                 
                 with tab2:
-                    # Filtro de divergência usando a estrutura original para facilidade
                     filtro = (df_final['Diferenca_Saldo_CC'].abs() > 0.01) | \
                              (df_final['Diferenca_Saldo_Aplic'].abs() > 0.01) | \
                              (df_final['Diferenca_Rendimento'].abs() > 0.01)
-                    
                     df_div = df_formatado[filtro]
                     if df_div.empty: st.info("Sem divergências!")
                     else: st.dataframe(df_div, use_container_width=True)
