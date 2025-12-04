@@ -10,7 +10,7 @@ from openpyxl.utils import get_column_letter
 # CONFIGURAÇÃO GERAL
 # ==========================================
 st.set_page_config(
-    page_title="Conciliação Contábil",
+    page_title="Conciliação Fianceira",
     layout="wide",
     page_icon="📊",
     initial_sidebar_state="collapsed"
