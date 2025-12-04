@@ -9,7 +9,7 @@ from openpyxl.utils import get_column_letter
 # CONFIGURAÇÃO GERAL
 # ==========================================
 st.set_page_config(
-    page_title="Super Conciliador v2.1 (Caixa Fix)",
+    page_title="Super Conciliador v2.2 (Caixa Fix + Outer Join)",
     layout="wide",
     page_icon="💸",
     initial_sidebar_state="expanded"
@@ -22,15 +22,10 @@ st.set_page_config(
 def gerar_chave_padronizada(texto_conta):
     """
     Padroniza a chave para cruzar os dados.
-    Estratégia: 
-    1. Se tiver barra '/', pega só o que vem depois da última barra (Lógica Caixa).
-    2. Remove tudo que não é número.
-    3. Pega os últimos 7 dígitos.
     """
     if isinstance(texto_conta, str):
         # Correção específica para Caixa (Agencia/Op/Conta)
         if '/' in texto_conta:
-            # Pega o último pedaço (000574174758-9)
             texto_conta = texto_conta.split('/')[-1]
             
         # Remove letras, traços, espaços
@@ -40,7 +35,6 @@ def gerar_chave_padronizada(texto_conta):
             return None
             
         # Pega os últimos 7 dígitos e garante zeros à esquerda
-        # Isso alinha 7695-3 (BB) com 000574174758-9 (Caixa) se a contabilidade usar os finais
         ultimos_7_digitos = parte_numerica[-7:]
         return ultimos_7_digitos.zfill(7)
     return None
@@ -70,7 +64,7 @@ def limpar_valor_monetario(valor_str):
         return 0.0
 
 # ==========================================
-# 2. MOTOR DE LEITURA DE PDF (ESPECIALIZADO CAIXA)
+# 2. MOTOR DE LEITURA DE PDF
 # ==========================================
 
 def extrair_pdf_melhorado(arquivo, tipo_extrato):
@@ -84,13 +78,9 @@ def extrair_pdf_melhorado(arquivo, tipo_extrato):
         # --- 1. EXTRAÇÃO DA CONTA ---
         conta_encontrada = "N/A"
         
-        # Padrões de Regex (Ordem importa!)
         padroes_conta = [
-            # Padrão Caixa Específico: 4064/3709/000574174758-9
             r"Conta:\s*(\d{4}\/\d{3,4}\/[\d\-]+)", 
             r"Conta\s*Vinculada:\s*(\d{4}\/\d{3,4}\/[\d\-]+)",
-            
-            # Padrão BB e Genéricos
             r"Conta\s*Corrente\s*[:\s]*([\d\.\-\/]+)",
             r"Conta\s*[:\s]*([\d\.\-\/]+)",
             r"Agência.*?Conta.*?([\d\.\-]{5,})"
@@ -100,7 +90,6 @@ def extrair_pdf_melhorado(arquivo, tipo_extrato):
             match = re.search(p, texto_completo, re.IGNORECASE)
             if match:
                 conta_raw = match.group(1).strip()
-                # Validação: ignora se pegou só data ou lixo pequeno
                 if len(re.sub(r'\D', '', conta_raw)) > 4:
                     conta_encontrada = conta_raw
                     break
@@ -114,39 +103,29 @@ def extrair_pdf_melhorado(arquivo, tipo_extrato):
         for linha in linhas:
             linha_upper = linha.upper().strip()
             
-            # -- SALDO (Lógica Universal) --
-            # Palavras chaves: SALDO FINAL (Caixa), SALDO (BB)
+            # -- SALDO --
             gatilhos_saldo = ["SALDO FINAL", "SALDO TOTAL", "SALDO ATUAL", "SALDO EM"]
             ignorar = ["ANTERIOR", "BLOQUEADO", "PROVISORIO"]
             
-            # Se for BB e tiver "SALDO" no fim da linha com data
-            # Se for Caixa, procura "SALDO FINAL" explícito
-            
             if any(g in linha_upper for g in gatilhos_saldo) and not any(i in linha_upper for i in ignorar):
-                # Captura valor monetário na mesma linha
                 match_val = re.search(r"(\d{1,3}(?:\.\d{3})*,\d{2})([CD]?)", linha_upper)
                 if match_val:
                     valor_str = match_val.group(1)
                     letra = match_val.group(2)
-                    
-                    # Verifica sinal
                     sinal = "D" if letra == 'D' or " D" in linha_upper or "DEB" in linha_upper else "C"
-                    
-                    # Atualiza o saldo (o último encontrado no arquivo costuma ser o final do período)
                     saldo_final = limpar_valor_monetario(f"{valor_str} {sinal}")
 
-            # -- RENDIMENTOS (Para Extratos de Aplicação) --
+            # -- RENDIMENTOS --
             if tipo_extrato == 'INV':
                 gatilhos_rend = ["RENDIMENTO BRUTO", "RENTABILIDADE", "RENDIMENTO NO MÊS", "RENDIMENTO LIQUIDO"]
                 if any(g in linha_upper for g in gatilhos_rend) and "ACUMULADO" not in linha_upper:
                     match_val = re.search(r"(\d{1,3}(?:\.\d{3})*,\d{2})", linha)
                     if match_val:
                         valor = limpar_valor_monetario(match_val.group(1))
-                        # Filtro para não pegar o saldo total como rendimento
                         if valor < 100000000: 
                             rendimento_total += valor
 
-        # Fallback: Contas sem movimento (BB mostra só "Saldo Anterior" ou "Saldo")
+        # Fallback para contas sem movimento
         if saldo_final == 0.0 and ("NAO HOUVE MOVIMENTO" in texto_completo.upper() or "SEM MOVIMENTO" in texto_completo.upper()):
              match_ant = re.search(r"(?:SALDO ANTERIOR|SALDO).*?(\d{1,3}(?:\.\d{3})*,\d{2})", texto_completo, re.IGNORECASE | re.DOTALL)
              if match_ant:
@@ -156,7 +135,7 @@ def extrair_pdf_melhorado(arquivo, tipo_extrato):
             "Conta": conta_encontrada,
             "Saldo": saldo_final,
             "Rendimento": rendimento_total,
-            "Texto_Raw": texto_completo[:300] + "..." # Debug
+            "Texto_Raw": texto_completo[:300] + "..."
         }
         
     except Exception as e:
@@ -170,10 +149,8 @@ def processar_contabil(arquivo, tipo='SALDO'):
     if arquivo is None: return pd.DataFrame()
     
     try:
-        # Tenta descobrir onde está o cabeçalho
         df = pd.read_csv(arquivo, encoding='latin-1', sep=';', header=1, dtype=str)
         
-        # Procura coluna Chave (Conta)
         col_chave = None
         possiveis_chaves = ['Domicílio bancário', 'Domicilio', 'Conta', 'Nº Conta', 'Descrição']
         for col in df.columns:
@@ -182,7 +159,6 @@ def processar_contabil(arquivo, tipo='SALDO'):
                     col_chave = col
                     break
         
-        # Se não achou na linha 1, tenta linha 0
         if not col_chave:
             arquivo.seek(0)
             df = pd.read_csv(arquivo, encoding='latin-1', sep=';', header=0, dtype=str)
@@ -194,7 +170,6 @@ def processar_contabil(arquivo, tipo='SALDO'):
         
         if not col_chave: return pd.DataFrame()
 
-        # Procura coluna Valor
         col_valor = None
         possiveis_valores = ['Saldo Final', 'Saldo Atual', 'Movimento', 'Valor']
         for col in df.columns:
@@ -206,18 +181,16 @@ def processar_contabil(arquivo, tipo='SALDO'):
         
         if not col_valor: return pd.DataFrame()
 
-        # Processamento
         df['Chave Primaria'] = df[col_chave].apply(gerar_chave_padronizada)
         df = df.dropna(subset=['Chave Primaria'])
         df['Valor_Numerico'] = df[col_valor].astype(str).apply(limpar_valor_monetario)
         
         if tipo == 'SALDO':
-            # Se for relatório de balancete (tem conta contábil)
             if any('contábil' in str(c).lower() for c in df.columns):
                 col_contabil = next(c for c in df.columns if 'contábil' in str(c).lower())
                 df_pivot = df.pivot_table(index='Chave Primaria', columns=col_contabil, values='Valor_Numerico', aggfunc='sum').reset_index()
                 
-                # Mapeia colunas (ajuste os códigos conforme sua contabilidade)
+                # CÓDIGOS CONTÁBEIS (Ajuste aqui se necessário)
                 col_mov = next((c for c in df_pivot.columns if '111111901' in str(c) or 'Conta Movimento' in str(c)), None)
                 col_app = next((c for c in df_pivot.columns if '1111150' in str(c) or 'Aplicação' in str(c)), None)
                 
@@ -226,13 +199,11 @@ def processar_contabil(arquivo, tipo='SALDO'):
                 df_res['Saldo_Contabil_CC'] = df_pivot[col_mov].fillna(0) if col_mov else 0.0
                 df_res['Saldo_Contabil_Aplic'] = df_pivot[col_app].fillna(0) if col_app else 0.0
                 
-                # Descrição
                 desc = df[['Chave Primaria', col_chave]].drop_duplicates(subset='Chave Primaria')
                 df_res = df_res.merge(desc, on='Chave Primaria', how='left')
                 df_res.rename(columns={col_chave: 'Descrição'}, inplace=True)
                 return df_res
             else:
-                # Se for lista simples
                 df_agrup = df.groupby('Chave Primaria')['Valor_Numerico'].sum().reset_index()
                 df_agrup.rename(columns={'Valor_Numerico': 'Saldo_Contabil_CC'}, inplace=True)
                 df_agrup['Saldo_Contabil_Aplic'] = 0.0
@@ -251,7 +222,7 @@ def processar_contabil(arquivo, tipo='SALDO'):
         return pd.DataFrame()
 
 # ==========================================
-# 4. CONSOLIDAÇÃO
+# 4. CONSOLIDAÇÃO (ATUALIZADO)
 # ==========================================
 
 def executar_processo(file_saldos, file_rendim, lista_extratos_cc, lista_extratos_inv):
@@ -261,7 +232,7 @@ def executar_processo(file_saldos, file_rendim, lista_extratos_cc, lista_extrato
     df_rendim = processar_contabil(file_rendim, 'RENDIMENTO')
     
     if df_saldos.empty:
-        st.error("Não foi possível ler o arquivo de Saldos Contábeis. Verifique se é um CSV separado por ponto e vírgula (;).")
+        st.error("Não foi possível ler o arquivo de Saldos Contábeis.")
         return pd.DataFrame(), pd.DataFrame()
 
     # Junta as tabelas contábeis
@@ -292,14 +263,24 @@ def executar_processo(file_saldos, file_rendim, lista_extratos_cc, lista_extrato
         log_leitura.append({'Arquivo': f.name, 'Conta Lida': res['Conta'], 'Chave Gerada': chave, 'Saldo_Aplic': res['Saldo'], 'Rendimento': res['Rendimento'], 'Tipo': 'INV', 'Raw': res['Texto_Raw']})
 
     df_log = pd.DataFrame(log_leitura)
-    if not dados_banco:
-        return pd.DataFrame(), df_log
 
-    # Consolida Banco
-    df_banco = pd.DataFrame(dados_banco).groupby('Chave Primaria').sum().reset_index()
+    # Consolida Banco (CORREÇÃO DE ERRO SE LISTA VAZIA)
+    if dados_banco:
+        df_banco = pd.DataFrame(dados_banco).groupby('Chave Primaria').sum().reset_index()
+    else:
+        # Cria dataframe vazio com estrutura correta para não quebrar o merge
+        df_banco = pd.DataFrame(columns=['Chave Primaria', 'Saldo_Banco_CC', 'Saldo_Banco_Aplic', 'Rendimento_Banco'])
 
-    # Cruzamento Final
-    df_final = pd.merge(df_contabil, df_banco, on='Chave Primaria', how='inner')
+    # Cruzamento Final (ALTERADO PARA OUTER JOIN)
+    # Isso garante que contas que só existem no Banco OU só no CSV apareçam
+    df_final = pd.merge(df_contabil, df_banco, on='Chave Primaria', how='outer').fillna(0)
+
+    # Tratamento da coluna Descrição para contas que só vieram do Banco (não tem descrição no CSV)
+    if 'Descrição' in df_final.columns:
+        df_final['Descrição'] = df_final['Descrição'].replace(0, 'CONTA NÃO LOCALIZADA NO CSV')
+        df_final['Descrição'] = df_final['Descrição'].fillna('CONTA NÃO LOCALIZADA NO CSV')
+    else:
+        df_final['Descrição'] = 'CONTA NÃO LOCALIZADA NO CSV'
 
     # Diferenças
     df_final['Diferenca_Saldo_CC'] = df_final['Saldo_Contabil_CC'] - df_final['Saldo_Banco_CC']
@@ -328,7 +309,7 @@ def to_excel(df):
 # 5. INTERFACE
 # ==========================================
 
-st.title("💸 Super Conciliador de Contas v2.1")
+st.title("💸 Super Conciliador v2.2")
 st.markdown("### Suporte a Caixa (Ag/Op/Conta) e BB Integrado")
 
 col1, col2 = st.columns(2)
@@ -348,7 +329,7 @@ if st.button("Executar Conciliação", type="primary"):
             df_final, df_log = executar_processo(f_saldos, f_rendim, f_cc if f_cc else [], f_inv if f_inv else [])
             
             if not df_final.empty:
-                st.success("Sucesso!")
+                st.success("Processamento concluído!")
                 
                 tab1, tab2, tab3 = st.tabs(["📊 Resultado", "⚠️ Divergências", "🕵️ Raio-X"])
                 
@@ -357,14 +338,22 @@ if st.button("Executar Conciliação", type="primary"):
                     st.download_button("Baixar Excel", to_excel(df_final), "conciliacao_final.xlsx")
                 
                 with tab2:
-                    div = df_final[(df_final['Diferenca_Saldo_CC'].abs() > 0.01) | (df_final['Diferenca_Rendimento'].abs() > 0.01)]
-                    if div.empty: st.info("Sem divergências!")
+                    # Filtra divergências maiores que 1 centavo
+                    div = df_final[
+                        (df_final['Diferenca_Saldo_CC'].abs() > 0.01) | 
+                        (df_final['Diferenca_Saldo_Aplic'].abs() > 0.01) |
+                        (df_final['Diferenca_Rendimento'].abs() > 0.01)
+                    ]
+                    if div.empty: st.info("Sem divergências materiais encontradas!")
                     else: st.dataframe(div.style.format("{:,.2f}"))
                 
                 with tab3:
                     st.dataframe(df_log)
             else:
-                st.error("Não houve correspondência.")
+                st.error("Ocorreu um erro ou não há dados correspondentes.")
                 st.dataframe(df_log)
     else:
-        st.warning("Carregue os arquivos necessários.")
+        st.warning("Carregue o arquivo de Saldos (CSV) e pelo menos um extrato bancário.")
+
+st.markdown("---")
+st.info("Nota: Os extratos devem estar separados por banco e tipo. O sistema usa os **últimos 7 dígitos** da conta para o cruzamento.")
