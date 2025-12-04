@@ -83,9 +83,9 @@ def extrair_pdf_melhorado(arquivo, tipo_extrato):
             r"Conta:\s*(\d{4}\/\d{3,4}\/[\d\-]+)", 
             r"Conta\s*Vinculada:\s*(\d{4}\/\d{3,4}\/[\d\-]+)", 
             r"Conta\s*Corrente\s*[:\s]*([\d\.\-\/]+)",    
-            r"Conta\s*[:\s]*([\d\.\-\/]+)",               
-            r"Agência.*?Conta.*?([\d\.\-]{5,})",          
-            r"C\/C\s*[:\s]*([\d\.\-\/]+)"                 
+            r"Conta\s*[:\s]*([\d\.\-\/]+)",                
+            r"Agência.*?Conta.*?([\d\.\-]{5,})",           
+            r"C\/C\s*[:\s]*([\d\.\-\/]+)"                  
         ]
         
         for p in padroes_conta:
@@ -158,7 +158,6 @@ def carregar_depara():
     Assume que o arquivo está na pasta 'depara' dentro do repositório.
     """
     # 1. Monta o caminho absoluto baseado na localização deste script
-    # Isso evita erros se o diretório de trabalho (working directory) for diferente
     diretorio_atual = os.path.dirname(os.path.abspath(__file__))
     caminho_arquivo = os.path.join(diretorio_atual, "depara", "DEPARA_CONTAS BANCÁRIAS_CEF.xlsx")
 
@@ -168,7 +167,7 @@ def carregar_depara():
             caminho_arquivo,
             sheet_name="2025_JUNHO (2)",
             dtype=str,
-            engine='openpyxl' # Recomendado explicitar a engine para xlsx
+            engine='openpyxl'
         )
         
         # Padronização
@@ -185,7 +184,6 @@ def carregar_depara():
         return df_depara
 
     except FileNotFoundError:
-        # Mensagem de erro informativa mostrando onde o código tentou buscar
         st.warning(f"Aviso: Arquivo DE-PARA não encontrado em: '{caminho_arquivo}'. Verifique se a pasta e o arquivo existem no GitHub.")
         return pd.DataFrame()
     except Exception as e:
@@ -259,9 +257,10 @@ def processar_contabil(arquivo, tipo='SALDO'):
         return pd.DataFrame()
 
 # ==========================================
-# 4. CONSOLIDAÇÃO
+# 4. CONSOLIDAÇÃO E DE-PARA
 # ==========================================
 def executar_processo(file_saldos, file_rendim, lista_extratos_cc, lista_extratos_inv):
+    # 1. Carrega CSVs
     df_saldos = processar_contabil(file_saldos, 'SALDO')
     df_rendim = processar_contabil(file_rendim, 'RENDIMENTO')
     
@@ -269,12 +268,30 @@ def executar_processo(file_saldos, file_rendim, lista_extratos_cc, lista_extrato
         st.error("Erro na leitura do CSV de Saldos.")
         return pd.DataFrame(), pd.DataFrame()
 
+    # 2. LÓGICA DE-PARA (Aqui é aplicada a substituição)
+    df_depara = carregar_depara()
+    
+    if not df_depara.empty:
+        # Cria dicionário {Antiga: Nova}
+        dicionario_depara = dict(zip(df_depara['Chave Antiga'], df_depara['Chave Nova']))
+        
+        # Aplica no Saldos
+        df_saldos['Chave Primaria'] = df_saldos['Chave Primaria'].replace(dicionario_depara)
+        
+        # Aplica no Rendimentos (se houver)
+        if not df_rendim.empty:
+            df_rendim['Chave Primaria'] = df_rendim['Chave Primaria'].replace(dicionario_depara)
+            
+        st.toast(f"✅ De-Para aplicado: {len(df_depara)} contas convertidas.")
+
+    # 3. Merge Contábil
     df_contabil = df_saldos
     if not df_rendim.empty:
         df_contabil = pd.merge(df_saldos, df_rendim, on='Chave Primaria', how='outer').fillna(0)
     else:
         df_contabil['Rendimento_Contabil'] = 0.0
 
+    # 4. Leitura dos PDFs (Bancos)
     dados_banco = []
     log_leitura = []
 
@@ -296,6 +313,7 @@ def executar_processo(file_saldos, file_rendim, lista_extratos_cc, lista_extrato
     else:
         df_banco = pd.DataFrame(columns=['Chave Primaria', 'Saldo_Banco_CC', 'Saldo_Banco_Aplic', 'Rendimento_Banco'])
 
+    # 5. Consolidação Final
     df_final = pd.merge(df_contabil, df_banco, on='Chave Primaria', how='outer').fillna(0)
 
     if 'Descrição' in df_final.columns: df_final['Descrição'] = df_final['Descrição'].fillna('CONTA SEM DESCRIÇÃO')
