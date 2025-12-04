@@ -6,6 +6,7 @@ import os
 import fitz  # PyMuPDF
 from openpyxl import Workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
+from openpyxl.utils import get_column_letter # <--- Faltava esta linha
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter, landscape
@@ -360,10 +361,9 @@ def to_excel_styled(df):
     """Gera Excel com formatação profissional, bordas e cores."""
     output = io.BytesIO()
     
-    # Cria o objeto Workbook (openpyxl)
     wb = Workbook()
     ws = wb.active
-    ws.title = "Conciliacao"
+    ws.title = "Conciliação"
 
     # Estilos
     header_fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
@@ -372,15 +372,6 @@ def to_excel_styled(df):
     thin_border = Border(left=border_style, right=border_style, top=border_style, bottom=border_style)
     alignment_center = Alignment(horizontal="center", vertical="center")
     number_fmt = '#,##0.00'
-
-    # Adiciona dados (incluindo cabeçalho multiindex)
-    # df.columns é MultiIndex, precisamos tratar para ficar bonito
-    
-    # Linha 1: Top Level Headers (Merge manual)
-    top_headers = []
-    seen = None
-    count = 0
-    start_col = 1
     
     # Extrai headers do MultiIndex
     headers_lvl0 = [c[0] for c in df.columns]
@@ -412,12 +403,9 @@ def to_excel_styled(df):
             # Formatação Numérica
             if isinstance(value, (int, float)):
                 cell.number_format = number_fmt
-                # Cor vermelha para negativos ou diferenças
                 if value < -0.01:
                     cell.font = Font(color="FF0000")
                 
-                # Se for coluna de diferença (indices 5, 8, 11 aprox), checar
-                # Aqui simplificamos: se for diferença e != 0, pinta
                 header_name = headers_lvl1[c_idx-1]
                 if "Diferença" in header_name and abs(value) > 0.01:
                      cell.font = Font(color="FF0000", bold=True)
@@ -443,13 +431,13 @@ def to_pdf(df):
     elements.append(Paragraph("Relatório de Conciliação Contábil", title_style))
     elements.append(Spacer(1, 12))
 
-    # Prepara dados para o ReportLab (Lista de Listas)
-    # Achata o cabeçalho MultiIndex para uma string só com quebra de linha
+    # Prepara dados para o ReportLab
+    # Achata o cabeçalho MultiIndex
     headers = [f"{c[0]}\n{c[1]}" for c in df.columns]
     
     data = [headers]
     
-    # Converte dados do DF para lista e formata números
+    # Converte dados do DF para lista
     for index, row in df.iterrows():
         row_list = []
         for col_name, val in row.items():
@@ -460,9 +448,9 @@ def to_pdf(df):
         data.append(row_list)
 
     # Cria Tabela
-    # Calcula larguras relativas (ajuste manual aproximado para caber em landscape)
+    # Colunas: Desc(100), Conta(60), Resto(70)
     col_widths = [100, 60] + [70] * 9 
-    t = Table(data, colWidths=None) # Deixa automático se possível, ou usa col_widths
+    t = Table(data, colWidths=None)
 
     # Estilo da Tabela
     style = TableStyle([
@@ -475,11 +463,11 @@ def to_pdf(df):
         ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
         ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
         ('FONTSIZE', (0, 1), (-1, -1), 7),
-        ('ALIGN', (0, 1), (1, -1), 'LEFT'), # Alinha descrição/conta à esquerda
-        ('ALIGN', (2, 1), (-1, -1), 'RIGHT'), # Alinha números à direita
+        ('ALIGN', (0, 1), (1, -1), 'LEFT'), 
+        ('ALIGN', (2, 1), (-1, -1), 'RIGHT'), 
     ])
     
-    # Zebra (Alternating Rows)
+    # Zebra
     for i in range(1, len(data)):
         if i % 2 == 0:
             bg_color = colors.whitesmoke
@@ -487,7 +475,7 @@ def to_pdf(df):
             bg_color = colors.white
         style.add('BACKGROUND', (0, i), (-1, i), bg_color)
         
-        # Pinta texto de vermelho se encontrar parenteses ou sinal de menos (indicando negativo na formatação string)
+        # Pinta texto de vermelho se negativo
         for j, val in enumerate(data[i]):
             if j > 1 and ("-" in val or "(" in val) and val != "0,00":
                  style.add('TEXTCOLOR', (j, i), (j, i), colors.red)
