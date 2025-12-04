@@ -261,6 +261,25 @@ def processar_contabil(arquivo, tipo='SALDO'):
 # ==========================================
 # 4. CONSOLIDAÇÃO E DE-PARA
 # ==========================================
+def identificar_banco_por_texto(row):
+    """
+    Tenta descobrir o banco pela descrição do CSV se o PDF não foi encontrado.
+    """
+    # 1. Se já tem nome do banco vindo do PDF, mantém
+    if pd.notna(row.get('Nome_Banco')) and str(row.get('Nome_Banco')) not in ['0', '0.0', 'nan', 'None']:
+        return str(row['Nome_Banco']).upper()
+    
+    # 2. Se não tem PDF, tenta achar pistas na Descrição do ERP
+    desc = str(row.get('Descrição_ERP', '')).upper()
+    
+    if 'BRASIL' in desc or 'BB ' in desc or 'BCO' in desc:
+        return "BANCO DO BRASIL (SÓ NO ERP)"
+    elif 'CAIXA' in desc or 'CEF' in desc or 'FEDERAL' in desc:
+        return "CAIXA ECONÔMICA (SÓ NO ERP)"
+    
+    # 3. Se não achou pista nenhuma
+    return desc
+
 def executar_processo(file_saldos, file_rendim, lista_arquivos_bancarios):
     # 1. Carrega CSVs
     df_saldos = processar_contabil(file_saldos, 'SALDO')
@@ -286,11 +305,10 @@ def executar_processo(file_saldos, file_rendim, lista_arquivos_bancarios):
     else:
         df_contabil['Rendimento_Contabil'] = 0.0
 
-    # 4. Leitura dos PDFs (Bancos) com Identificação do Banco
+    # 4. Leitura dos PDFs (Bancos)
     dados_banco = []
     log_leitura = []
 
-    # 'lista_arquivos_bancarios' agora contem dicts: {'arquivo': f, 'banco': 'BB', 'tipo': 'CC'}
     for item in lista_arquivos_bancarios:
         f = item['arquivo']
         banco_nome = item['banco']
@@ -311,7 +329,7 @@ def executar_processo(file_saldos, file_rendim, lista_arquivos_bancarios):
         if chave: 
             dados_banco.append({
                 'Chave Primaria': chave, 
-                'Nome_Banco': banco_nome, # Guarda o nome do banco
+                'Nome_Banco': banco_nome,
                 'Saldo_Banco_CC': res['Saldo'] if tipo_extrato == 'CC' else 0.0,
                 'Saldo_Banco_Aplic': res['Saldo'] if tipo_extrato == 'INV' else 0.0, 
                 'Rendimento_Banco': res['Rendimento'] if tipo_extrato == 'INV' else 0.0
@@ -320,7 +338,6 @@ def executar_processo(file_saldos, file_rendim, lista_arquivos_bancarios):
     df_log = pd.DataFrame(log_leitura)
     
     if dados_banco:
-        # Agrupa somando valores, mas mantém o Nome do Banco (pega o primeiro encontrado)
         df_banco = pd.DataFrame(dados_banco).groupby('Chave Primaria').agg({
             'Saldo_Banco_CC': 'sum',
             'Saldo_Banco_Aplic': 'sum',
@@ -333,22 +350,9 @@ def executar_processo(file_saldos, file_rendim, lista_arquivos_bancarios):
     # 5. Consolidação Final
     df_final = pd.merge(df_contabil, df_banco, on='Chave Primaria', how='outer').fillna(0)
 
-    # --- LÓGICA DA COLUNA DESCRIÇÃO ---
-    # Prioridade: 1. Nome do Banco (Vindo do PDF) | 2. Descrição Original (Vindo do CSV)
-    if 'Nome_Banco' in df_final.columns:
-        # Se 'Nome_Banco' for 0 ou NaN, usa a Descrição do ERP
-        df_final['Nome_Banco'] = df_final['Nome_Banco'].replace(0, pd.NA)
-        
-        if 'Descrição_ERP' in df_final.columns:
-            df_final['Descrição'] = df_final['Nome_Banco'].fillna(df_final['Descrição_ERP'])
-        else:
-            df_final['Descrição'] = df_final['Nome_Banco'].fillna('-')
-    else:
-        # Fallback se não processou nenhum banco
-        df_final['Descrição'] = df_final.get('Descrição_ERP', '-')
-
-    # Padronização final
-    df_final['Descrição'] = df_final['Descrição'].astype(str).str.upper().replace(['NAN', 'NONE', '0', ''], '-')
+    # --- NOVA LÓGICA: Aplica a identificação inteligente do banco ---
+    df_final['Descrição'] = df_final.apply(identificar_banco_por_texto, axis=1)
+    # ---------------------------------------------------------------
 
     df_final['Diferenca_Saldo_CC'] = df_final['Saldo_Contabil_CC'] - df_final['Saldo_Banco_CC']
     df_final['Diferenca_Saldo_Aplic'] = df_final['Saldo_Contabil_Aplic'] - df_final['Saldo_Banco_Aplic']
@@ -374,12 +378,11 @@ def to_excel(df):
 st.title("Sistema de Conciliação Contábil")
 st.markdown("---")
 
-# Layout de Upload (Containers lado a lado)
 col_left, col_right = st.columns(2)
 
 with col_left:
     with st.container(border=True):
-        st.subheader("1. Arquivos Contábeis (CSV)")
+        st.subheader("1. Arquivos Contábeis (ERP)")
         f_saldos = st.file_uploader("Saldos (CSV)", type='csv')
         f_rendim = st.file_uploader("Rendimentos (CSV - Opcional)", type='csv')
 
@@ -389,12 +392,11 @@ with col_right:
         f_bb_cc = st.file_uploader("🔵 Banco do Brasil - Conta Corrente", type='pdf', accept_multiple_files=True)
         f_bb_inv = st.file_uploader("🔵 Banco do Brasil - Investimentos", type='pdf', accept_multiple_files=True)
         
-        st.divider() # Linha visual para separar os bancos
+        st.divider()
         
         f_caixa_cc = st.file_uploader("🟠 Caixa Econômica - Conta Corrente", type='pdf', accept_multiple_files=True)
         f_caixa_inv = st.file_uploader("🟠 Caixa Econômica - Investimentos", type='pdf', accept_multiple_files=True)
 
-# Botão de Processamento
 st.markdown("<br>", unsafe_allow_html=True)
 btn_processar = st.button("Processar Conciliação", type="primary", use_container_width=True)
 
@@ -402,27 +404,21 @@ if btn_processar:
     if not f_saldos:
         st.warning("⚠️ Obrigatório carregar o arquivo de Saldos (CSV).")
     else:
-        # Monta lista unificada, mas "etiquetada" com o nome do banco
         lista_arquivos = []
-
         if f_bb_cc:
             for f in f_bb_cc: lista_arquivos.append({'arquivo': f, 'banco': 'BANCO DO BRASIL', 'tipo': 'CC'})
         if f_bb_inv:
             for f in f_bb_inv: lista_arquivos.append({'arquivo': f, 'banco': 'BANCO DO BRASIL', 'tipo': 'INV'})
-            
         if f_caixa_cc:
             for f in f_caixa_cc: lista_arquivos.append({'arquivo': f, 'banco': 'CAIXA ECONÔMICA', 'tipo': 'CC'})
         if f_caixa_inv:
             for f in f_caixa_inv: lista_arquivos.append({'arquivo': f, 'banco': 'CAIXA ECONÔMICA', 'tipo': 'INV'})
         
-        # Execução
         with st.spinner("Lendo arquivos e cruzando dados..."):
             df_final, df_log = executar_processo(f_saldos, f_rendim, lista_arquivos)
             
             if not df_final.empty:
                 df_display = df_final.copy()
-                
-                # Mapa de colunas para MultiIndex
                 mapa_colunas = {
                     'Descrição': ('Dados', 'Banco / Descrição'), 
                     'Chave Primaria': ('Dados', 'Conta Reduzida'),
@@ -441,12 +437,10 @@ if btn_processar:
                 df_display = df_display[cols_existentes]
                 df_display.columns = pd.MultiIndex.from_tuples([mapa_colunas[c] for c in df_display.columns])
                 
-                # Formatação
                 numeric_cols = df_display.select_dtypes(include=['float', 'int']).columns
                 df_formatado = df_display.copy()
                 for col in numeric_cols: df_formatado[col] = df_formatado[col].apply(formatar_moeda_br)
 
-                # Abas
                 st.success("Processamento concluído.")
                 tab1, tab2, tab3 = st.tabs(["📊 Visão Geral", "🚨 Apenas Divergências", "📝 Log de Leitura"])
                 
@@ -465,4 +459,4 @@ if btn_processar:
                 with tab3:
                     st.dataframe(df_log, use_container_width=True)
             else:
-                st.error("O processamento não retornou dados. Verifique os arquivos.")
+                st.error("O processamento não retornou dados.")
