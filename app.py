@@ -350,11 +350,11 @@ with col_cont2: f_rendim = st.file_uploader("📂 2. Rendimentos (Relatório Fle
 
 col_bb, col_caixa = st.columns(2)
 with col_bb:
-    f_bb_cc = st.file_uploader("🔵 BB - Conta Corrente", type='pdf', accept_multiple_files=True)
-    f_bb_inv = st.file_uploader("🔵 BB - Aplicações", type='pdf', accept_multiple_files=True)
+    f_bb_cc = st.file_uploader("🔵 Extrato BB - Conta Corrente", type='pdf', accept_multiple_files=True)
+    f_bb_inv = st.file_uploader("🔵 Extrato BB - Aplicações", type='pdf', accept_multiple_files=True)
 with col_caixa:
-    f_caixa_cc = st.file_uploader("🟠 Caixa - Conta Corrente", type='pdf', accept_multiple_files=True)
-    f_caixa_inv = st.file_uploader("🟠 Caixa - Aplicações", type='pdf', accept_multiple_files=True)
+    f_caixa_cc = st.file_uploader("🟠 Extrato Caixa Econômica - Conta Corrente", type='pdf', accept_multiple_files=True)
+    f_caixa_inv = st.file_uploader("🟠 Extrato Caixa Econômica - Aplicações", type='pdf', accept_multiple_files=True)
 
 # LÓGICA DO STATUS
 tem_csv = f_saldos is not None
