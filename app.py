@@ -384,7 +384,6 @@ if st.button("Executar Conciliação", type="primary"):
             df_final, df_log = executar_processo(f_saldos, f_rendim, lista_final_cc, lista_final_inv)
             
             if not df_final.empty:
-                st.balloons()
                 st.success("Sucesso!")
                 
                 df_display = df_final.copy()
