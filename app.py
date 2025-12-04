@@ -300,10 +300,10 @@ def to_excel(df):
     return output.getvalue()
 
 # ==========================================
-# 5. INTERFACE (DIVIDIDA)
+# 5. INTERFACE (CORRIGIDA)
 # ==========================================
 
-st.title("💸 Super Conciliador v2.3")
+st.title("💸 Super Conciliador v2.4 (Fix Formatação)")
 st.markdown("### Suporte a Caixa e BB (Separação Total de Arquivos)")
 
 # Área de Upload da Contabilidade
@@ -345,12 +345,12 @@ if st.button("Executar Conciliação", type="primary"):
     if f_saldos and tem_banco:
         with st.spinner("Unificando arquivos e processando..."):
             
-            # Unifica as listas de CC (BB + Caixa) para enviar ao processador
+            # Unifica as listas de CC (BB + Caixa)
             lista_final_cc = []
             if f_bb_cc: lista_final_cc.extend(f_bb_cc)
             if f_caixa_cc: lista_final_cc.extend(f_caixa_cc)
             
-            # Unifica as listas de INV (BB + Caixa) para enviar ao processador
+            # Unifica as listas de INV (BB + Caixa)
             lista_final_inv = []
             if f_bb_inv: lista_final_inv.extend(f_bb_inv)
             if f_caixa_inv: lista_final_inv.extend(f_caixa_inv)
@@ -361,10 +361,21 @@ if st.button("Executar Conciliação", type="primary"):
             if not df_final.empty:
                 st.success("Processamento concluído!")
                 
+                # --- CORREÇÃO DO ERRO AQUI ---
+                # Definimos quais colunas são numéricas para aplicar a formatação apenas nelas
+                cols_numericas_alvo = [
+                    'Saldo_Contabil_CC', 'Saldo_Banco_CC', 'Diferenca_Saldo_CC',
+                    'Saldo_Contabil_Aplic', 'Saldo_Banco_Aplic', 'Diferenca_Saldo_Aplic',
+                    'Rendimento_Contabil', 'Rendimento_Banco', 'Diferenca_Rendimento'
+                ]
+                # Filtramos para garantir que só pegamos as que existem no dataframe final
+                cols_para_formatar = [c for c in cols_numericas_alvo if c in df_final.columns]
+
                 tab1, tab2, tab3 = st.tabs(["📊 Resultado Geral", "⚠️ Apenas Divergências", "🕵️ Log de Leitura"])
                 
                 with tab1:
-                    st.dataframe(df_final.style.format("{:,.2f}"))
+                    # Aplicamos o subset=cols_para_formatar
+                    st.dataframe(df_final.style.format("{:,.2f}", subset=cols_para_formatar))
                     st.download_button("Baixar Excel Completo", to_excel(df_final), "conciliacao_final.xlsx")
                 
                 with tab2:
@@ -373,8 +384,11 @@ if st.button("Executar Conciliação", type="primary"):
                         (df_final['Diferenca_Saldo_Aplic'].abs() > 0.01) |
                         (df_final['Diferenca_Rendimento'].abs() > 0.01)
                     ]
-                    if div.empty: st.info("Tudo bateu! Sem divergências.")
-                    else: st.dataframe(div.style.format("{:,.2f}"))
+                    if div.empty: 
+                        st.info("Tudo bateu! Sem divergências.")
+                    else: 
+                        # Aplicamos o subset aqui também
+                        st.dataframe(div.style.format("{:,.2f}", subset=cols_para_formatar))
                 
                 with tab3:
                     st.write("Verifique aqui se todos os arquivos carregados foram lidos corretamente:")
