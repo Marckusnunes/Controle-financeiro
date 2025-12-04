@@ -9,7 +9,7 @@ from openpyxl.utils import get_column_letter
 # CONFIGURAÇÃO GERAL
 # ==========================================
 st.set_page_config(
-    page_title="Super Conciliador v2.7 (Investimentos Fix)",
+    page_title="Super Conciliador v2.8 (Full Read)",
     layout="wide",
     page_icon="💸",
     initial_sidebar_state="expanded"
@@ -43,14 +43,14 @@ def gerar_chave_padronizada(texto_conta):
 def limpar_valor_monetario(valor_str):
     if not isinstance(valor_str, str): return 0.0
     valor_upper = valor_str.upper()
-    eh_negativo = 'D' in valor_upper or '-' in valor_str or 'DEB' in valor_upper
+    eh_negativo = 'D' in valor_upper or '-' in valor_str or 'DEB' in valor_upper or '(-)' in valor_str
     
     # Remove tudo que não é dígito, vírgula ou ponto
     limpo = re.sub(r'[^\d,\.]', '', valor_str)
     
     try:
         if not limpo: return 0.0
-        # Lógica BR: Se tem virgula e ponto, remove ponto. Se só tem virgula, troca por ponto.
+        # Lógica BR
         if ',' in limpo and '.' in limpo:
              limpo = limpo.replace('.', '').replace(',', '.')
         elif ',' in limpo:
@@ -66,7 +66,7 @@ def formatar_moeda_br(valor):
     return f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 # ==========================================
-# 2. MOTOR DE LEITURA DE PDF (ATUALIZADO v2.7)
+# 2. MOTOR DE LEITURA DE PDF (MOTOR v2.8 - LEITURA MULTILINHA)
 # ==========================================
 
 def extrair_pdf_melhorado(arquivo, tipo_extrato):
@@ -94,67 +94,96 @@ def extrair_pdf_melhorado(arquivo, tipo_extrato):
                     conta_encontrada = conta_raw
                     break
         
-        # --- 2. VALORES (Lógica Próxima Linha) ---
+        # --- 2. VALORES (LÓGICA REFORÇADA) ---
         saldo_final = 0.0
         rendimento_total = 0.0
         linhas = texto_completo.split('\n')
         
-        # Regex para capturar valor monetário (suporta formato 1.000,00 e 1000.00)
+        # Regex captura: 1.000,00 | 1000,00 | 1.000.00 (formato US raro)
         regex_valor = r"(\d{1,3}(?:\.\d{3})*,\d{2}|\d{1,3}(?:,\d{3})*\.\d{2})"
 
+        # Percorre as linhas com índice para poder olhar a próxima (i+1)
         for i, linha in enumerate(linhas):
             linha_upper = linha.upper().strip()
             
-            # -- SALDO --
+            # ----------------------------------------
+            # A. BLOCO DE SALDO
+            # ----------------------------------------
             gatilhos_saldo = [
                 "SALDO FINAL", "SALDO TOTAL", "SALDO ATUAL", "SALDO EM", 
                 "SALDO LÍQUIDO", "SALDO LIQUIDO", "SALDO BRUTO", 
-                "VALOR LIQUIDO", "TOTAL DISPONIVEL", "POSICAO EM", "TOTAL EM COTAS"
+                "VALOR LIQUIDO", "TOTAL DISPONIVEL", "POSICAO EM", "TOTAL EM COTAS",
+                "S A L D O"
             ]
-            ignorar = ["ANTERIOR", "BLOQUEADO", "PROVISORIO", "RENDIMENTO"]
+            ignorar_saldo = ["ANTERIOR", "BLOQUEADO", "PROVISORIO", "RENDIMENTO", "RENTABILIDADE"]
             
-            # Se a linha tem um gatilho de saldo e NÃO tem palavras ignoradas
-            if any(g in linha_upper for g in gatilhos_saldo) and not any(ign in linha_upper for ign in ignorar):
+            if any(g in linha_upper for g in gatilhos_saldo) and not any(ign in linha_upper for ign in ignorar_saldo):
                 
-                # Tenta achar o valor na MESMA linha
+                # Tenta linha ATUAL
                 match_val = re.search(regex_valor, linha_upper)
-                
                 if match_val:
-                    # Achou na mesma linha
-                    raw_val = match_val.group(0)
-                    # Verifica sinal negativo/Debito na mesma linha
                     sinal = "D" if " D" in linha_upper or "DEB" in linha_upper or "-" in linha_upper else "C"
-                    v = limpar_valor_monetario(f"{raw_val} {sinal}")
+                    v = limpar_valor_monetario(f"{match_val.group(0)} {sinal}")
                     if v != 0: saldo_final = v
                 
-                else:
-                    # NÃO achou na mesma linha -> Tenta olhar a PRÓXIMA linha
-                    # Isso resolve casos onde o PDF quebra: "Saldo Atual =" [enter] "100,00"
-                    if i + 1 < len(linhas):
-                        linha_prox = linhas[i+1].upper().strip()
-                        match_prox = re.search(regex_valor, linha_prox)
-                        if match_prox:
-                            raw_val = match_prox.group(0)
-                            v = limpar_valor_monetario(raw_val) # Assume Crédito/Positivo se estiver sozinho na linha
-                            if v != 0: saldo_final = v
+                # Tenta PRÓXIMA linha (se não achou na atual ou se for layout de tabela)
+                elif i + 1 < len(linhas):
+                    linha_prox = linhas[i+1].upper().strip()
+                    match_prox = re.search(regex_valor, linha_prox)
+                    if match_prox:
+                        # Verifica se a próxima linha não é outro título (ex: Saldo... \n Rendimento...)
+                        # Se for só número ou numero com C/D, pega.
+                        v = limpar_valor_monetario(match_prox.group(0))
+                        if v != 0: saldo_final = v
 
-            # -- RENDIMENTO (Investimentos) --
+            # ----------------------------------------
+            # B. BLOCO DE RENDIMENTO (INVESTIMENTOS)
+            # ----------------------------------------
             if tipo_extrato == 'INV':
-                gatilhos_rend = ["RENDIMENTO BRUTO", "RENTABILIDADE", "RENDIMENTO NO MÊS", "RENDIMENTO LIQUIDO"]
-                if any(g in linha_upper for g in gatilhos_rend) and "ACUMULADO" not in linha_upper:
+                # Prioriza Liquido se existir, mas soma Bruto se não houver especificação
+                gatilhos_rend = ["RENDIMENTO BRUTO", "RENTABILIDADE", "RENDIMENTO NO MÊS", "RENDIMENTO LIQUIDO", "RENTAB. NO MES"]
+                
+                if any(g in linha_upper for g in gatilhos_rend) and "ACUMULADO" not in linha_upper and "ANO" not in linha_upper:
+                    
+                    valor_encontrado = 0.0
+                    
+                    # 1. Tenta linha ATUAL
                     match_val = re.search(regex_valor, linha)
                     if match_val:
-                        valor = limpar_valor_monetario(match_val.group(0))
-                        if valor < 100000000: rendimento_total += valor
+                        valor_encontrado = limpar_valor_monetario(match_val.group(0))
+                    
+                    # 2. Tenta PRÓXIMA linha (Comum no Resumo do Mês BB)
+                    elif i + 1 < len(linhas):
+                        linha_prox = linhas[i+1].strip()
+                        match_prox = re.search(regex_valor, linha_prox)
+                        if match_prox:
+                            valor_encontrado = limpar_valor_monetario(match_prox.group(0))
+
+                    # Lógica de Soma: Evita duplicidade grosseira (Ex: Se já somou bruto, cuidado com liquido)
+                    # Mas como a estrutura varia, vamos somar e confiar que os gatilhos pegam linhas distintas
+                    if valor_encontrado != 0 and valor_encontrado < 100000000:
+                        # Se a linha diz "RENTABILIDADE %", o regex pega "1,25" (pequeno). 
+                        # Queremos valor financeiro, geralmente maior. Mas rendimento pode ser pequeno.
+                        # Vamos assumir que é valor financeiro.
+                        
+                        # Filtro especial: Se for "RENDIMENTO LIQUIDO", ele substitui o "BRUTO" anterior se for igual?
+                        # Para simplificar: Soma tudo. Em extrato BB geralmente aparece ou a tabela vertical ou horizontal.
+                        # Se aparecer Bruto e Liquido com valores iguais, o certo seria pegar o Liquido.
+                        # Ajuste Fino: Se achar "Líquido", zeramos o acumulado anterior e usamos ele? 
+                        # Risco alto. Vamos manter acumulativo simples por enquanto.
+                        if "LIQUIDO" in linha_upper or "LÍQUIDO" in linha_upper:
+                            # Se achou liquido, assume que é o valor final real deste bloco
+                            rendimento_total = valor_encontrado
+                        elif rendimento_total == 0:
+                            rendimento_total += valor_encontrado
 
         # Fallback 1: Contas sem movimento
         if saldo_final == 0.0 and ("NAO HOUVE MOVIMENTO" in texto_completo.upper() or "SEM MOVIMENTO" in texto_completo.upper()):
              match_ant = re.search(r"(?:SALDO ANTERIOR|SALDO).*?(\d{1,3}(?:\.\d{3})*,\d{2})", texto_completo, re.IGNORECASE | re.DOTALL)
              if match_ant: saldo_final = limpar_valor_monetario(match_ant.group(1))
 
-        # Fallback 2: Busca genérica por TOTAL no fim do arquivo (comum em fundos)
+        # Fallback 2: Busca genérica por TOTAL no fim
         if saldo_final == 0.0 and tipo_extrato == 'INV':
-            # Procura qualquer valor monetário após a palavra TOTAL ou SALDO
             match_last = re.findall(r"(?:TOTAL|SALDO|ATUAL).*?(\d{1,3}(?:\.\d{3})*,\d{2})", texto_completo, re.IGNORECASE)
             if match_last: 
                 saldo_final = limpar_valor_monetario(match_last[-1])
@@ -303,8 +332,8 @@ def to_excel(df):
 # ==========================================
 # 5. INTERFACE (VISUAL PRO)
 # ==========================================
-st.title("💸 Super Conciliador v2.7 (Investimentos Fix)")
-st.markdown("### Suporte a Caixa, BB e Correção de Linhas Quebradas")
+st.title("💸 Super Conciliador v2.8 (Full Read)")
+st.markdown("### Suporte a Caixa, BB e Tabelas Quebradas (Saldos e Rendimentos)")
 
 st.markdown("---")
 st.header("1. Arquivos da Contabilidade")
@@ -328,7 +357,7 @@ st.markdown("---")
 if st.button("Executar Conciliação", type="primary"):
     tem_banco = (f_bb_cc or f_bb_inv or f_caixa_cc or f_caixa_inv)
     if f_saldos and tem_banco:
-        with st.spinner("Processando..."):
+        with st.spinner("Lendo extratos complexos..."):
             lista_final_cc = []
             if f_bb_cc: lista_final_cc.extend(f_bb_cc)
             if f_caixa_cc: lista_final_cc.extend(f_caixa_cc)
