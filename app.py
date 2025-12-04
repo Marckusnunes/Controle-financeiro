@@ -4,13 +4,19 @@ import re
 import io
 import os
 import fitz  # PyMuPDF
-from openpyxl.utils import get_column_letter
+from openpyxl import Workbook
+from openpyxl.utils.dataframe import dataframe_to_rows
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import letter, landscape
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
 
 # ==========================================
 # CONFIGURAÇÃO GERAL
 # ==========================================
 st.set_page_config(
-    page_title="Conciliação Fianceira",
+    page_title="Conciliação Contábil",
     layout="wide",
     page_icon="📊",
     initial_sidebar_state="collapsed"
@@ -246,13 +252,6 @@ def processar_contabil(arquivo, tipo='SALDO'):
 # 4. CONSOLIDAÇÃO, DE-PARA E CLASSIFICAÇÃO
 # ==========================================
 def identificar_banco_por_texto(row):
-    """
-    Define a descrição final do Banco.
-    Ordem de Prioridade:
-    1. Nome vindo do PDF (Extrato identificado).
-    2. Palavras-chave na descrição do ERP (BRASIL/CAIXA).
-    3. Códigos bancários na descrição (001 = BB, 104 = Caixa).
-    """
     # 1. Se veio do PDF, já temos certeza
     if pd.notna(row.get('Nome_Banco')) and str(row.get('Nome_Banco')) not in ['0', '0.0', 'nan', 'None']:
         return str(row['Nome_Banco']).upper()
@@ -266,18 +265,15 @@ def identificar_banco_por_texto(row):
     elif 'CAIXA' in desc or 'CEF' in desc or 'FEDERAL' in desc or 'ECONÔMICA' in desc:
         return "CAIXA ECONÔMICA"
     
-    # 3. Busca por CÓDIGOS BANCÁRIOS (Critério complementar solicitado)
-    # Verifica se "001" ou "104" estão presentes na string
+    # 3. Busca por CÓDIGOS BANCÁRIOS
     if '001' in desc:
         return "BANCO DO BRASIL"
     if '104' in desc:
         return "CAIXA ECONÔMICA"
     
-    # Se nada funcionar, retorna a descrição original
     return desc
 
 def executar_processo(file_saldos, file_rendim, lista_arquivos_bancarios):
-    # 1. Carrega CSVs
     df_saldos = processar_contabil(file_saldos, 'SALDO')
     df_rendim = processar_contabil(file_rendim, 'RENDIMENTO')
     
@@ -285,7 +281,6 @@ def executar_processo(file_saldos, file_rendim, lista_arquivos_bancarios):
         st.error("Erro na leitura do CSV de Saldos.")
         return pd.DataFrame(), pd.DataFrame()
 
-    # 2. LÓGICA DE-PARA
     df_depara = carregar_depara()
     
     if not df_depara.empty:
@@ -294,14 +289,12 @@ def executar_processo(file_saldos, file_rendim, lista_arquivos_bancarios):
         if not df_rendim.empty:
             df_rendim['Chave Primaria'] = df_rendim['Chave Primaria'].replace(dicionario_depara)
 
-    # 3. Merge Contábil
     df_contabil = df_saldos
     if not df_rendim.empty:
         df_contabil = pd.merge(df_saldos, df_rendim, on='Chave Primaria', how='outer').fillna(0)
     else:
         df_contabil['Rendimento_Contabil'] = 0.0
 
-    # 4. Leitura dos PDFs (Bancos)
     dados_banco = []
     log_leitura = []
 
@@ -343,14 +336,10 @@ def executar_processo(file_saldos, file_rendim, lista_arquivos_bancarios):
     else:
         df_banco = pd.DataFrame(columns=['Chave Primaria', 'Saldo_Banco_CC', 'Saldo_Banco_Aplic', 'Rendimento_Banco', 'Nome_Banco'])
 
-    # 5. Consolidação Final
     df_final = pd.merge(df_contabil, df_banco, on='Chave Primaria', how='outer').fillna(0)
 
-    # --- APLICA A NOVA LÓGICA DE IDENTIFICAÇÃO ---
     df_final['Descrição'] = df_final.apply(identificar_banco_por_texto, axis=1)
-    # ---------------------------------------------
     
-    # Padronização final
     df_final['Descrição'] = df_final['Descrição'].astype(str).str.upper().replace(['NAN', 'NONE', '0', ''], '-')
 
     df_final['Diferenca_Saldo_CC'] = df_final['Saldo_Contabil_CC'] - df_final['Saldo_Banco_CC']
@@ -363,25 +352,163 @@ def executar_processo(file_saldos, file_rendim, lista_arquivos_bancarios):
     colunas_finais = [c for c in cols if c in df_final.columns]
     return df_final[colunas_finais], df_log
 
-def to_excel(df):
+# ==========================================
+# 5. GERADORES DE ARQUIVO (Excel e PDF)
+# ==========================================
+
+def to_excel_styled(df):
+    """Gera Excel com formatação profissional, bordas e cores."""
     output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=True) 
-        ws = writer.sheets['Sheet1']
-        for i in range(1, 20): ws.column_dimensions[get_column_letter(i)].width = 20
+    
+    # Cria o objeto Workbook (openpyxl)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Conciliacao"
+
+    # Estilos
+    header_fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+    header_font = Font(bold=True, name="Calibri", size=11)
+    border_style = Side(border_style="thin", color="000000")
+    thin_border = Border(left=border_style, right=border_style, top=border_style, bottom=border_style)
+    alignment_center = Alignment(horizontal="center", vertical="center")
+    number_fmt = '#,##0.00'
+
+    # Adiciona dados (incluindo cabeçalho multiindex)
+    # df.columns é MultiIndex, precisamos tratar para ficar bonito
+    
+    # Linha 1: Top Level Headers (Merge manual)
+    top_headers = []
+    seen = None
+    count = 0
+    start_col = 1
+    
+    # Extrai headers do MultiIndex
+    headers_lvl0 = [c[0] for c in df.columns]
+    headers_lvl1 = [c[1] for c in df.columns]
+    
+    # Escreve Linha 1 (Categorias)
+    for col_idx, header in enumerate(headers_lvl0, 1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = alignment_center
+        cell.border = thin_border
+    
+    # Escreve Linha 2 (Detalhes)
+    for col_idx, header in enumerate(headers_lvl1, 1):
+        cell = ws.cell(row=2, column=col_idx, value=header)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = alignment_center
+        cell.border = thin_border
+
+    # Escreve Dados
+    rows = dataframe_to_rows(df, index=False, header=False)
+    for r_idx, row in enumerate(rows, 3):
+        for c_idx, value in enumerate(row, 1):
+            cell = ws.cell(row=r_idx, column=c_idx, value=value)
+            cell.border = thin_border
+            
+            # Formatação Numérica
+            if isinstance(value, (int, float)):
+                cell.number_format = number_fmt
+                # Cor vermelha para negativos ou diferenças
+                if value < -0.01:
+                    cell.font = Font(color="FF0000")
+                
+                # Se for coluna de diferença (indices 5, 8, 11 aprox), checar
+                # Aqui simplificamos: se for diferença e != 0, pinta
+                header_name = headers_lvl1[c_idx-1]
+                if "Diferença" in header_name and abs(value) > 0.01:
+                     cell.font = Font(color="FF0000", bold=True)
+            
+    # Ajuste de largura das colunas
+    for i in range(1, len(df.columns) + 1):
+        ws.column_dimensions[get_column_letter(i)].width = 18
+
+    wb.save(output)
     return output.getvalue()
 
+def to_pdf(df):
+    """Gera PDF em paisagem com tabela zebrada."""
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=landscape(letter), rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=18)
+    
+    elements = []
+    
+    # Título
+    styles = getSampleStyleSheet()
+    title_style = styles['Heading1']
+    title_style.alignment = 1 # Center
+    elements.append(Paragraph("Relatório de Conciliação Contábil", title_style))
+    elements.append(Spacer(1, 12))
+
+    # Prepara dados para o ReportLab (Lista de Listas)
+    # Achata o cabeçalho MultiIndex para uma string só com quebra de linha
+    headers = [f"{c[0]}\n{c[1]}" for c in df.columns]
+    
+    data = [headers]
+    
+    # Converte dados do DF para lista e formata números
+    for index, row in df.iterrows():
+        row_list = []
+        for col_name, val in row.items():
+            if isinstance(val, (int, float)):
+                row_list.append(formatar_moeda_br(val))
+            else:
+                row_list.append(str(val))
+        data.append(row_list)
+
+    # Cria Tabela
+    # Calcula larguras relativas (ajuste manual aproximado para caber em landscape)
+    col_widths = [100, 60] + [70] * 9 
+    t = Table(data, colWidths=None) # Deixa automático se possível, ou usa col_widths
+
+    # Estilo da Tabela
+    style = TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 8),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+        ('FONTSIZE', (0, 1), (-1, -1), 7),
+        ('ALIGN', (0, 1), (1, -1), 'LEFT'), # Alinha descrição/conta à esquerda
+        ('ALIGN', (2, 1), (-1, -1), 'RIGHT'), # Alinha números à direita
+    ])
+    
+    # Zebra (Alternating Rows)
+    for i in range(1, len(data)):
+        if i % 2 == 0:
+            bg_color = colors.whitesmoke
+        else:
+            bg_color = colors.white
+        style.add('BACKGROUND', (0, i), (-1, i), bg_color)
+        
+        # Pinta texto de vermelho se encontrar parenteses ou sinal de menos (indicando negativo na formatação string)
+        for j, val in enumerate(data[i]):
+            if j > 1 and ("-" in val or "(" in val) and val != "0,00":
+                 style.add('TEXTCOLOR', (j, i), (j, i), colors.red)
+
+    t.setStyle(style)
+    elements.append(t)
+    
+    doc.build(elements)
+    return buffer.getvalue()
+
 # ==========================================
-# 5. INTERFACE DO USUÁRIO
+# 6. INTERFACE DO USUÁRIO
 # ==========================================
-st.title("Sistema de Conciliação Fianceira")
+st.title("Sistema de Conciliação Contábil")
 st.markdown("---")
 
 col_left, col_right = st.columns(2)
 
 with col_left:
     with st.container(border=True):
-        st.subheader("1. Arquivos Contábeis (CSV)")
+        st.subheader("1. Arquivos Contábeis (ERP)")
         f_saldos = st.file_uploader("Saldos (CSV)", type='csv')
         f_rendim = st.file_uploader("Rendimentos (CSV - Opcional)", type='csv')
 
@@ -445,7 +572,11 @@ if btn_processar:
                 
                 with tab1:
                     st.dataframe(df_formatado, use_container_width=True, height=500)
-                    st.download_button("📥 Baixar Planilha Excel", to_excel(df_display), "conciliacao.xlsx")
+                    col_dl1, col_dl2 = st.columns(2)
+                    with col_dl1:
+                        st.download_button("📥 Baixar Excel Formatado", to_excel_styled(df_display), "conciliacao_completa.xlsx", type='primary', use_container_width=True)
+                    with col_dl2:
+                        st.download_button("📄 Baixar Relatório PDF", to_pdf(df_display), "relatorio_conciliacao.pdf", use_container_width=True)
                 
                 with tab2:
                     filtro = (df_final['Diferenca_Saldo_CC'].abs() > 0.01) | \
