@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import re
 import io
+import os
 import fitz  # PyMuPDF
 from openpyxl.utils import get_column_letter
 
@@ -150,6 +151,46 @@ def extrair_pdf_melhorado(arquivo, tipo_extrato):
         return {"Conta": conta_encontrada, "Saldo": saldo_final, "Rendimento": rendimento_total, "Texto_Raw": texto_limpo}
     except Exception as e:
         return {"Conta": "Erro", "Saldo": 0.0, "Rendimento": 0.0, "Texto_Raw": str(e)}
+
+def carregar_depara():
+    """
+    Carrega o arquivo DE-PARA e padroniza as chaves.
+    Assume que o arquivo está na pasta 'depara' dentro do repositório.
+    """
+    # 1. Monta o caminho absoluto baseado na localização deste script
+    # Isso evita erros se o diretório de trabalho (working directory) for diferente
+    diretorio_atual = os.path.dirname(os.path.abspath(__file__))
+    caminho_arquivo = os.path.join(diretorio_atual, "depara", "DEPARA_CONTAS BANCÁRIAS_CEF.xlsx")
+
+    try:
+        # Tenta carregar o arquivo usando o caminho construído
+        df_depara = pd.read_excel(
+            caminho_arquivo,
+            sheet_name="2025_JUNHO (2)",
+            dtype=str,
+            engine='openpyxl' # Recomendado explicitar a engine para xlsx
+        )
+        
+        # Padronização
+        df_depara.columns = ['Conta Antiga', 'Conta Nova']
+        
+        # Verifica se a função gerar_chave_padronizada existe no escopo
+        if 'gerar_chave_padronizada' in globals():
+            df_depara['Chave Antiga'] = df_depara['Conta Antiga'].apply(gerar_chave_padronizada)
+            df_depara['Chave Nova'] = df_depara['Conta Nova'].apply(gerar_chave_padronizada)
+        else:
+            st.error("Erro: A função 'gerar_chave_padronizada' não foi definida.")
+            return pd.DataFrame()
+
+        return df_depara
+
+    except FileNotFoundError:
+        # Mensagem de erro informativa mostrando onde o código tentou buscar
+        st.warning(f"Aviso: Arquivo DE-PARA não encontrado em: '{caminho_arquivo}'. Verifique se a pasta e o arquivo existem no GitHub.")
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Erro ao ler o arquivo DE-PARA: {e}")
+        return pd.DataFrame()
 
 # ==========================================
 # 3. LEITURA CONTÁBIL
