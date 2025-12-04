@@ -7,14 +7,24 @@ import fitz  # PyMuPDF
 from openpyxl.utils import get_column_letter
 
 # ==========================================
-# CONFIGURAÇÃO GERAL
+# CONFIGURAÇÃO GERAL (Layout Profissional)
 # ==========================================
 st.set_page_config(
-    page_title="Sistema de Conciliação de Saldos Financeios",
+    page_title="Conciliação Contábil",
     layout="wide",
-    page_icon="✅",
-    initial_sidebar_state="expanded"
+    page_icon="📊",
+    initial_sidebar_state="collapsed"
 )
+
+# Estilo CSS
+st.markdown("""
+    <style>
+        .block-container {padding-top: 2rem; padding-bottom: 2rem;}
+        div[data-testid="stFileUploader"] section {padding: 10px;}
+        h1 {font-size: 1.8rem;}
+        h3 {font-size: 1.2rem;}
+    </style>
+""", unsafe_allow_html=True)
 
 # ==========================================
 # 1. FUNÇÕES DE LIMPEZA E FORMATAÇÃO
@@ -23,7 +33,7 @@ def gerar_chave_padronizada(texto_conta):
     if not isinstance(texto_conta, str): return None
     texto_conta = texto_conta.strip()
     
-    # Lógica Contábil (Códigos longos com ponto)
+    # Lógica Contábil
     if '.' in texto_conta and len(texto_conta) > 12:
         partes = texto_conta.split('.')
         maior_parte = ""
@@ -153,41 +163,25 @@ def extrair_pdf_melhorado(arquivo, tipo_extrato):
         return {"Conta": "Erro", "Saldo": 0.0, "Rendimento": 0.0, "Texto_Raw": str(e)}
 
 def carregar_depara():
-    """
-    Carrega o arquivo DE-PARA e padroniza as chaves.
-    Assume que o arquivo está na pasta 'depara' dentro do repositório.
-    """
-    # 1. Monta o caminho absoluto baseado na localização deste script
+    """Carrega o arquivo DE-PARA e padroniza as chaves."""
     diretorio_atual = os.path.dirname(os.path.abspath(__file__))
     caminho_arquivo = os.path.join(diretorio_atual, "depara", "DEPARA_CONTAS BANCÁRIAS_CEF.xlsx")
 
     try:
-        # Tenta carregar o arquivo usando o caminho construído
         df_depara = pd.read_excel(
             caminho_arquivo,
             sheet_name="2025_JUNHO (2)",
             dtype=str,
             engine='openpyxl'
         )
-        
-        # Padronização
         df_depara.columns = ['Conta Antiga', 'Conta Nova']
-        
-        # Verifica se a função gerar_chave_padronizada existe no escopo
         if 'gerar_chave_padronizada' in globals():
             df_depara['Chave Antiga'] = df_depara['Conta Antiga'].apply(gerar_chave_padronizada)
             df_depara['Chave Nova'] = df_depara['Conta Nova'].apply(gerar_chave_padronizada)
         else:
-            st.error("Erro: A função 'gerar_chave_padronizada' não foi definida.")
             return pd.DataFrame()
-
         return df_depara
-
-    except FileNotFoundError:
-        st.warning(f"Aviso: Arquivo DE-PARA não encontrado em: '{caminho_arquivo}'. Verifique se a pasta e o arquivo existem no GitHub.")
-        return pd.DataFrame()
-    except Exception as e:
-        st.error(f"Erro ao ler o arquivo DE-PARA: {e}")
+    except (FileNotFoundError, Exception):
         return pd.DataFrame()
 
 # ==========================================
@@ -223,6 +217,13 @@ def processar_contabil(arquivo, tipo='SALDO'):
         df = df.dropna(subset=['Chave Primaria'])
         df['Valor_Numerico'] = df[col_valor].astype(str).apply(limpar_valor_monetario)
         
+        # Identificação de Coluna de Descrição (Fallback)
+        col_desc_original = col_chave 
+        for col in df.columns:
+            if ('descri' in str(col).lower() or 'nome' in str(col).lower()) and col != col_chave:
+                col_desc_original = col
+                break
+
         if tipo == 'SALDO':
             if any('contábil' in str(c).lower() for c in df.columns):
                 col_contabil = next(c for c in df.columns if 'contábil' in str(c).lower())
@@ -236,17 +237,18 @@ def processar_contabil(arquivo, tipo='SALDO'):
                 df_res['Saldo_Contabil_CC'] = df_pivot[col_mov].fillna(0) if col_mov else 0.0
                 df_res['Saldo_Contabil_Aplic'] = df_pivot[col_app].fillna(0) if col_app else 0.0
                 
-                desc = df[['Chave Primaria', col_chave]].drop_duplicates(subset='Chave Primaria')
+                desc = df[['Chave Primaria', col_desc_original]].drop_duplicates(subset='Chave Primaria')
                 df_res = df_res.merge(desc, on='Chave Primaria', how='left')
-                df_res.rename(columns={col_chave: 'Descrição'}, inplace=True)
+                df_res.rename(columns={col_desc_original: 'Descrição_ERP'}, inplace=True)
                 return df_res
             else:
                 df_agrup = df.groupby('Chave Primaria')['Valor_Numerico'].sum().reset_index()
                 df_agrup.rename(columns={'Valor_Numerico': 'Saldo_Contabil_CC'}, inplace=True)
                 df_agrup['Saldo_Contabil_Aplic'] = 0.0
-                desc = df[['Chave Primaria', col_chave]].drop_duplicates(subset='Chave Primaria')
+                
+                desc = df[['Chave Primaria', col_desc_original]].drop_duplicates(subset='Chave Primaria')
                 df_agrup = df_agrup.merge(desc, on='Chave Primaria', how='left')
-                df_agrup.rename(columns={col_chave: 'Descrição'}, inplace=True)
+                df_agrup.rename(columns={col_desc_original: 'Descrição_ERP'}, inplace=True)
                 return df_agrup
 
         elif tipo == 'RENDIMENTO':
@@ -259,7 +261,7 @@ def processar_contabil(arquivo, tipo='SALDO'):
 # ==========================================
 # 4. CONSOLIDAÇÃO E DE-PARA
 # ==========================================
-def executar_processo(file_saldos, file_rendim, lista_extratos_cc, lista_extratos_inv):
+def executar_processo(file_saldos, file_rendim, lista_arquivos_bancarios):
     # 1. Carrega CSVs
     df_saldos = processar_contabil(file_saldos, 'SALDO')
     df_rendim = processar_contabil(file_rendim, 'RENDIMENTO')
@@ -268,21 +270,14 @@ def executar_processo(file_saldos, file_rendim, lista_extratos_cc, lista_extrato
         st.error("Erro na leitura do CSV de Saldos.")
         return pd.DataFrame(), pd.DataFrame()
 
-    # 2. LÓGICA DE-PARA (Aqui é aplicada a substituição)
+    # 2. LÓGICA DE-PARA
     df_depara = carregar_depara()
     
     if not df_depara.empty:
-        # Cria dicionário {Antiga: Nova}
         dicionario_depara = dict(zip(df_depara['Chave Antiga'], df_depara['Chave Nova']))
-        
-        # Aplica no Saldos
         df_saldos['Chave Primaria'] = df_saldos['Chave Primaria'].replace(dicionario_depara)
-        
-        # Aplica no Rendimentos (se houver)
         if not df_rendim.empty:
             df_rendim['Chave Primaria'] = df_rendim['Chave Primaria'].replace(dicionario_depara)
-            
-        st.toast(f"✅ De-Para aplicado: {len(df_depara)} contas convertidas.")
 
     # 3. Merge Contábil
     df_contabil = df_saldos
@@ -291,33 +286,69 @@ def executar_processo(file_saldos, file_rendim, lista_extratos_cc, lista_extrato
     else:
         df_contabil['Rendimento_Contabil'] = 0.0
 
-    # 4. Leitura dos PDFs (Bancos)
+    # 4. Leitura dos PDFs (Bancos) com Identificação do Banco
     dados_banco = []
     log_leitura = []
 
-    for f in lista_extratos_cc:
-        res = extrair_pdf_melhorado(f, 'CC')
+    # 'lista_arquivos_bancarios' agora contem dicts: {'arquivo': f, 'banco': 'BB', 'tipo': 'CC'}
+    for item in lista_arquivos_bancarios:
+        f = item['arquivo']
+        banco_nome = item['banco']
+        tipo_extrato = item['tipo']
+        
+        res = extrair_pdf_melhorado(f, tipo_extrato)
         chave = gerar_chave_padronizada(res['Conta'])
-        log_leitura.append({'Arquivo': f.name, 'Conta Lida': res['Conta'], 'Chave Gerada': str(chave), 'Saldo': res['Saldo'], 'Rendimento': 0.0, 'Tipo': 'CC', 'Raw': res['Texto_Raw']})
-        if chave: dados_banco.append({'Chave Primaria': chave, 'Saldo_Banco_CC': res['Saldo'], 'Saldo_Banco_Aplic': 0.0, 'Rendimento_Banco': 0.0})
+        
+        log_leitura.append({
+            'Arquivo': f.name, 
+            'Banco': banco_nome,
+            'Conta Lida': res['Conta'], 
+            'Chave Gerada': str(chave), 
+            'Saldo': res['Saldo'], 
+            'Rendimento': res['Rendimento'] if tipo_extrato == 'INV' else 0.0
+        })
 
-    for f in lista_extratos_inv:
-        res = extrair_pdf_melhorado(f, 'INV')
-        chave = gerar_chave_padronizada(res['Conta'])
-        log_leitura.append({'Arquivo': f.name, 'Conta Lida': res['Conta'], 'Chave Gerada': str(chave), 'Saldo': res['Saldo'], 'Rendimento': res['Rendimento'], 'Tipo': 'INV', 'Raw': res['Texto_Raw']})
-        if chave: dados_banco.append({'Chave Primaria': chave, 'Saldo_Banco_CC': 0.0, 'Saldo_Banco_Aplic': res['Saldo'], 'Rendimento_Banco': res['Rendimento']})
+        if chave: 
+            dados_banco.append({
+                'Chave Primaria': chave, 
+                'Nome_Banco': banco_nome, # Guarda o nome do banco
+                'Saldo_Banco_CC': res['Saldo'] if tipo_extrato == 'CC' else 0.0,
+                'Saldo_Banco_Aplic': res['Saldo'] if tipo_extrato == 'INV' else 0.0, 
+                'Rendimento_Banco': res['Rendimento'] if tipo_extrato == 'INV' else 0.0
+            })
 
     df_log = pd.DataFrame(log_leitura)
+    
     if dados_banco:
-        df_banco = pd.DataFrame(dados_banco).groupby('Chave Primaria').sum().reset_index()
+        # Agrupa somando valores, mas mantém o Nome do Banco (pega o primeiro encontrado)
+        df_banco = pd.DataFrame(dados_banco).groupby('Chave Primaria').agg({
+            'Saldo_Banco_CC': 'sum',
+            'Saldo_Banco_Aplic': 'sum',
+            'Rendimento_Banco': 'sum',
+            'Nome_Banco': 'first'
+        }).reset_index()
     else:
-        df_banco = pd.DataFrame(columns=['Chave Primaria', 'Saldo_Banco_CC', 'Saldo_Banco_Aplic', 'Rendimento_Banco'])
+        df_banco = pd.DataFrame(columns=['Chave Primaria', 'Saldo_Banco_CC', 'Saldo_Banco_Aplic', 'Rendimento_Banco', 'Nome_Banco'])
 
     # 5. Consolidação Final
     df_final = pd.merge(df_contabil, df_banco, on='Chave Primaria', how='outer').fillna(0)
 
-    if 'Descrição' in df_final.columns: df_final['Descrição'] = df_final['Descrição'].fillna('CONTA SEM DESCRIÇÃO')
-    else: df_final['Descrição'] = 'CONTA SEM DESCRIÇÃO'
+    # --- LÓGICA DA COLUNA DESCRIÇÃO ---
+    # Prioridade: 1. Nome do Banco (Vindo do PDF) | 2. Descrição Original (Vindo do CSV)
+    if 'Nome_Banco' in df_final.columns:
+        # Se 'Nome_Banco' for 0 ou NaN, usa a Descrição do ERP
+        df_final['Nome_Banco'] = df_final['Nome_Banco'].replace(0, pd.NA)
+        
+        if 'Descrição_ERP' in df_final.columns:
+            df_final['Descrição'] = df_final['Nome_Banco'].fillna(df_final['Descrição_ERP'])
+        else:
+            df_final['Descrição'] = df_final['Nome_Banco'].fillna('-')
+    else:
+        # Fallback se não processou nenhum banco
+        df_final['Descrição'] = df_final.get('Descrição_ERP', '-')
+
+    # Padronização final
+    df_final['Descrição'] = df_final['Descrição'].astype(str).str.upper().replace(['NAN', 'NONE', '0', ''], '-')
 
     df_final['Diferenca_Saldo_CC'] = df_final['Saldo_Contabil_CC'] - df_final['Saldo_Banco_CC']
     df_final['Diferenca_Saldo_Aplic'] = df_final['Saldo_Contabil_Aplic'] - df_final['Saldo_Banco_Aplic']
@@ -334,84 +365,104 @@ def to_excel(df):
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=True) 
         ws = writer.sheets['Sheet1']
-        for i in range(1, 20): ws.column_dimensions[get_column_letter(i)].width = 18
+        for i in range(1, 20): ws.column_dimensions[get_column_letter(i)].width = 20
     return output.getvalue()
 
 # ==========================================
-# 5. INTERFACE (PAINEL DE STATUS)
+# 5. INTERFACE DO USUÁRIO
 # ==========================================
-st.title("Sistema de Conciliação de Saldos Financeiros")
-
-# PAINEL DE STATUS
-st.markdown("### Status dos Arquivos")
-col_cont1, col_cont2 = st.columns(2)
-with col_cont1: f_saldos = st.file_uploader("📂 1. Saldos Contábeis (Relatório Flexvision 0113083)", type='csv')
-with col_cont2: f_rendim = st.file_uploader("📂 2. Rendimentos (Relatório Flexvision 014387)", type='csv')
-
-col_bb, col_caixa = st.columns(2)
-with col_bb:
-    f_bb_cc = st.file_uploader("🔵 Extrato BB - Conta Corrente", type='pdf', accept_multiple_files=True)
-    f_bb_inv = st.file_uploader("🔵 Extrato BB - Aplicações", type='pdf', accept_multiple_files=True)
-with col_caixa:
-    f_caixa_cc = st.file_uploader("🟠 Extrato Caixa Econômica - Conta Corrente", type='pdf', accept_multiple_files=True)
-    f_caixa_inv = st.file_uploader("🟠 Extrato Caixa Econômica - Aplicações", type='pdf', accept_multiple_files=True)
-
-# LÓGICA DO STATUS
-tem_csv = f_saldos is not None
-tem_banco = (f_bb_cc or f_bb_inv or f_caixa_cc or f_caixa_inv)
-
-c1, c2 = st.columns(2)
-with c1:
-    if tem_csv: st.success("✅ CSV de Saldos Carregado")
-    else: st.error("❌ Faltando: Saldos (CSV)")
-with c2:
-    if tem_banco: st.success("✅ Pelo menos um PDF carregado")
-    else: st.error("❌ Faltando: Extratos Bancários")
-
+st.title("Sistema de Conciliação Contábil")
 st.markdown("---")
 
-if st.button("Executar Conciliação", type="primary"):
-    if tem_csv and tem_banco:
-        with st.spinner("Processando..."):
-            lista_final_cc = []
-            if f_bb_cc: lista_final_cc.extend(f_bb_cc)
-            if f_caixa_cc: lista_final_cc.extend(f_caixa_cc)
+# Layout de Upload (Containers lado a lado)
+col_left, col_right = st.columns(2)
+
+with col_left:
+    with st.container(border=True):
+        st.subheader("1. Arquivos Contábeis (ERP)")
+        f_saldos = st.file_uploader("Saldos (CSV)", type='csv')
+        f_rendim = st.file_uploader("Rendimentos (CSV - Opcional)", type='csv')
+
+with col_right:
+    with st.container(border=True):
+        st.subheader("2. Extratos Bancários (PDF)")
+        f_bb_cc = st.file_uploader("🔵 Banco do Brasil - Conta Corrente", type='pdf', accept_multiple_files=True)
+        f_bb_inv = st.file_uploader("🔵 Banco do Brasil - Investimentos", type='pdf', accept_multiple_files=True)
+        
+        st.divider() # Linha visual para separar os bancos
+        
+        f_caixa_cc = st.file_uploader("🟠 Caixa Econômica - Conta Corrente", type='pdf', accept_multiple_files=True)
+        f_caixa_inv = st.file_uploader("🟠 Caixa Econômica - Investimentos", type='pdf', accept_multiple_files=True)
+
+# Botão de Processamento
+st.markdown("<br>", unsafe_allow_html=True)
+btn_processar = st.button("Processar Conciliação", type="primary", use_container_width=True)
+
+if btn_processar:
+    if not f_saldos:
+        st.warning("⚠️ Obrigatório carregar o arquivo de Saldos (CSV).")
+    else:
+        # Monta lista unificada, mas "etiquetada" com o nome do banco
+        lista_arquivos = []
+
+        if f_bb_cc:
+            for f in f_bb_cc: lista_arquivos.append({'arquivo': f, 'banco': 'BANCO DO BRASIL', 'tipo': 'CC'})
+        if f_bb_inv:
+            for f in f_bb_inv: lista_arquivos.append({'arquivo': f, 'banco': 'BANCO DO BRASIL', 'tipo': 'INV'})
             
-            lista_final_inv = []
-            if f_bb_inv: lista_final_inv.extend(f_bb_inv)
-            if f_caixa_inv: lista_final_inv.extend(f_caixa_inv)
-            
-            df_final, df_log = executar_processo(f_saldos, f_rendim, lista_final_cc, lista_final_inv)
+        if f_caixa_cc:
+            for f in f_caixa_cc: lista_arquivos.append({'arquivo': f, 'banco': 'CAIXA ECONÔMICA', 'tipo': 'CC'})
+        if f_caixa_inv:
+            for f in f_caixa_inv: lista_arquivos.append({'arquivo': f, 'banco': 'CAIXA ECONÔMICA', 'tipo': 'INV'})
+        
+        # Execução
+        with st.spinner("Lendo arquivos e cruzando dados..."):
+            df_final, df_log = executar_processo(f_saldos, f_rendim, lista_arquivos)
             
             if not df_final.empty:
-                st.success("Sucesso!")
-                
                 df_display = df_final.copy()
+                
+                # Mapa de colunas para MultiIndex
                 mapa_colunas = {
-                    'Descrição': ('Dados', 'Descrição'), 'Chave Primaria': ('Dados', 'Conta'),
-                    'Saldo_Contabil_CC': ('CONTA CORRENTE', 'Contabilidade'), 'Saldo_Banco_CC': ('CONTA CORRENTE', 'Extrato Banco'), 'Diferenca_Saldo_CC': ('CONTA CORRENTE', 'Diferença'),
-                    'Saldo_Contabil_Aplic': ('APLICAÇÃO', 'Contabilidade'), 'Saldo_Banco_Aplic': ('APLICAÇÃO', 'Extrato Banco'), 'Diferenca_Saldo_Aplic': ('APLICAÇÃO', 'Diferença'),
-                    'Rendimento_Contabil': ('RENDIMENTO', 'Contabilidade'), 'Rendimento_Banco': ('RENDIMENTO', 'Extrato Banco'), 'Diferenca_Rendimento': ('RENDIMENTO', 'Diferença')
+                    'Descrição': ('Dados', 'Banco / Descrição'), 
+                    'Chave Primaria': ('Dados', 'Conta Reduzida'),
+                    'Saldo_Contabil_CC': ('Conta Corrente', 'Contábil'), 
+                    'Saldo_Banco_CC': ('Conta Corrente', 'Banco'), 
+                    'Diferenca_Saldo_CC': ('Conta Corrente', 'Diferença'),
+                    'Saldo_Contabil_Aplic': ('Aplicação', 'Contábil'), 
+                    'Saldo_Banco_Aplic': ('Aplicação', 'Banco'), 
+                    'Diferenca_Saldo_Aplic': ('Aplicação', 'Diferença'),
+                    'Rendimento_Contabil': ('Rendimentos', 'Contábil'), 
+                    'Rendimento_Banco': ('Rendimentos', 'Banco'), 
+                    'Diferenca_Rendimento': ('Rendimentos', 'Diferença')
                 }
+                
                 cols_existentes = [c for c in df_display.columns if c in mapa_colunas]
                 df_display = df_display[cols_existentes]
                 df_display.columns = pd.MultiIndex.from_tuples([mapa_colunas[c] for c in df_display.columns])
                 
+                # Formatação
                 numeric_cols = df_display.select_dtypes(include=['float', 'int']).columns
                 df_formatado = df_display.copy()
                 for col in numeric_cols: df_formatado[col] = df_formatado[col].apply(formatar_moeda_br)
 
-                tab1, tab2, tab3 = st.tabs(["📊 Resultado", "🚨 Divergências", "🕵️ Log"])
+                # Abas
+                st.success("Processamento concluído.")
+                tab1, tab2, tab3 = st.tabs(["📊 Visão Geral", "🚨 Apenas Divergências", "📝 Log de Leitura"])
+                
                 with tab1:
-                    st.dataframe(df_formatado, use_container_width=True)
-                    st.download_button("Baixar Excel", to_excel(df_display), "conciliacao_final.xlsx")
+                    st.dataframe(df_formatado, use_container_width=True, height=500)
+                    st.download_button("📥 Baixar Planilha Excel", to_excel(df_display), "conciliacao.xlsx")
+                
                 with tab2:
-                    filtro = (df_final['Diferenca_Saldo_CC'].abs() > 0.01) | (df_final['Diferenca_Saldo_Aplic'].abs() > 0.01) | (df_final['Diferenca_Rendimento'].abs() > 0.01)
+                    filtro = (df_final['Diferenca_Saldo_CC'].abs() > 0.01) | \
+                             (df_final['Diferenca_Saldo_Aplic'].abs() > 0.01) | \
+                             (df_final['Diferenca_Rendimento'].abs() > 0.01)
                     df_div = df_formatado[filtro]
-                    if df_div.empty: st.info("Sem divergências!")
+                    if df_div.empty: st.info("Tudo certo! Nenhuma divergência encontrada.")
                     else: st.dataframe(df_div, use_container_width=True)
-                with tab3: st.dataframe(df_log)
-            else: st.error("Erro crítico: Tabela vazia.")
-    else:
-        st.warning("O botão só funciona se as caixas de status acima estiverem verdes ✅.")
-
+                
+                with tab3:
+                    st.dataframe(df_log, use_container_width=True)
+            else:
+                st.error("O processamento não retornou dados. Verifique os arquivos.")
