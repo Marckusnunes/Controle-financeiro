@@ -374,7 +374,7 @@ def to_excel(df):
 # ==========================================
 # 5. INTERFACE DO USUÁRIO
 # ==========================================
-st.title("Sistema de Conciliação Contábil")
+st.title("Sistema de Conciliação Fianceira")
 st.markdown("---")
 
 col_left, col_right = st.columns(2)
