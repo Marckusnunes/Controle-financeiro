@@ -6,7 +6,7 @@ import os
 import fitz  # PyMuPDF
 from openpyxl import Workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
-from openpyxl.utils import get_column_letter
+from openpyxl.utils import get_column_letter # <--- Faltava esta linha
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter, landscape
@@ -77,35 +77,6 @@ def formatar_moeda_br(valor):
     if pd.isna(valor): return "0,00"
     return f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-def extrair_valor_monetario_flex(texto):
-    """
-    Função blindada para o layout da Caixa Econômica e Banco do Brasil.
-    Evita misturar cotas com moeda e lida perfeitamente com 3.952,38C ou 123,45D.
-    """
-    match = re.search(r"(-?\d{1,3}(?:\.\d{3})*,\d{2})(?!\d)\s*([CDcd\-])?", texto)
-    if not match: return 0.0
-    
-    numero_str = match.group(1)
-    sulfixo = match.group(2)
-    
-    limpo = numero_str.replace('.', '').replace(',', '.')
-    try:
-        valor = float(limpo)
-    except:
-        return 0.0
-        
-    texto_upper = texto.upper()
-    is_negative = False
-    
-    if sulfixo and sulfixo.upper() in ['D', '-']:
-        is_negative = True
-    elif "-" in numero_str:
-        is_negative = True
-    elif (re.search(r"\b(D|DEB|DEBITO)\b", texto_upper) and "DIAS" not in texto_upper):
-        is_negative = True
-        
-    return -abs(valor) if is_negative else abs(valor)
-
 # ==========================================
 # 2. MOTOR DE LEITURA DE PDF
 # ==========================================
@@ -123,10 +94,10 @@ def extrair_pdf_melhorado(arquivo, tipo_extrato):
         padroes_conta = [
             r"Conta:\s*(\d{4}\/\d{3,4}\/[\d\-]+)", 
             r"Conta\s*Vinculada:\s*(\d{4}\/\d{3,4}\/[\d\-]+)", 
-            r"Conta\s*Corrente\s*[:\s]*([\d\.\-\/]+)",   
+            r"Conta\s*Corrente\s*[:\s]*([\d\.\-\/]+)",    
             r"Conta\s*[:\s]*([\d\.\-\/]+)",                
-            r"Agência.*?Conta.*?([\d\.\-]{5,})",            
-            r"C\/C\s*[:\s]*([\d\.\-\/]+)"                 
+            r"Agência.*?Conta.*?([\d\.\-]{5,})",           
+            r"C\/C\s*[:\s]*([\d\.\-\/]+)"                  
         ]
         
         for p in padroes_conta:
@@ -144,63 +115,63 @@ def extrair_pdf_melhorado(arquivo, tipo_extrato):
 
         saldo_final = 0.0
         rendimento_total = 0.0
+        regex_valor = r"(\d{1,3}(?:\.\d{3})*,\d{2}|\d{1,3}(?:,\d{3})*\.\d{2})"
 
+       # Variável de controle para não somar o Rendimento Bruto e Líquido do mesmo fundo
         leu_rendimento_deste_fundo = False
 
         for i, linha in enumerate(linhas):
             linha_upper = linha.upper().strip()
             
+            # Identifica o início de um novo bloco de fundo/conta e reseta a trava
             if "SALDO ANTERIOR" in linha_upper:
                 leu_rendimento_deste_fundo = False
             
-            # --- 1. CAPTURA DE SALDO FINAL ---
+            # --- 1. CAPTURA DE SALDO FINAL (COM SOMA) ---
             gatilhos_saldo = ["SALDO FINAL", "SALDO TOTAL", "SALDO ATUAL", "SALDO EM", "SALDO LÍQUIDO", "SALDO BRUTO", "VALOR LIQUIDO", "TOTAL DISPONIVEL", "POSICAO EM", "TOTAL EM COTAS", "S A L D O"]
+            
+            # Adicionado "=" para ignorar a linha "SALDO ATUAL =" do resumo do BB e evitar duplicidade
             ignorar_saldo = ["ANTERIOR", "BLOQUEADO", "PROVISORIO", "RENDIMENTO", "RENTABILIDADE", "="]
             
             if any(g in linha_upper for g in gatilhos_saldo) and not any(ign in linha_upper for ign in ignorar_saldo):
+                match_val = re.search(regex_valor, linha_upper)
                 v = 0.0
-                if re.search(r"\d", linha_upper):
-                    v = extrair_valor_monetario_flex(linha_upper)
+                if match_val:
+                    sinal = "-" if " D" in linha_upper or "DEB" in linha_upper or "-" in linha_upper else ""
+                    v = limpar_valor_monetario(f"{sinal}{match_val.group(0)}")
+                elif i + 1 < len(linhas):
+                    match_prox = re.search(regex_valor, linhas[i+1])
+                    if match_prox:
+                        v = limpar_valor_monetario(match_prox.group(0))
                 
-                if v == 0.0:
-                    for j in range(1, 5):
-                        if i + j < len(linhas):
-                            v_temp = extrair_valor_monetario_flex(linhas[i+j])
-                            if v_temp != 0.0:
-                                v = v_temp
-                                break
-                
-                if v != 0.0: 
-                    saldo_final += v  
+                if v != 0: 
+                    saldo_final += v  # <-- Agora soma corretamente saldos de fundos diferentes
                     
-            # --- 2. CAPTURA DE RENDIMENTO ---
+            # --- 2. CAPTURA DE RENDIMENTO (COM TRAVA ANTI-DUPLICIDADE) ---
             if tipo_extrato == 'INV' and not leu_rendimento_deste_fundo:
                 gatilhos_rend = ["RENDIMENTO BRUTO", "RENTABILIDADE", "RENDIMENTO NO MÊS", "RENDIMENTO LIQUIDO", "RENTAB."]
                 
                 if any(g in linha_upper for g in gatilhos_rend) and "ACUMULADO" not in linha_upper and "ANO" not in linha_upper:
-                    v = 0.0
-                    if re.search(r"\d", linha_upper):
-                        v = extrair_valor_monetario_flex(linha_upper)
-                        
-                    if v == 0.0:
-                        for j in range(1, 5):
-                            if i + j < len(linhas):
-                                v_temp = extrair_valor_monetario_flex(linhas[i+j])
-                                if v_temp != 0.0:
-                                    v = v_temp
-                                    break
+                    valor_capturado = 0.0
+                    match_val = re.search(regex_valor, linha)
+                    if match_val: 
+                        valor_capturado = limpar_valor_monetario(match_val.group(0))
+                    elif i + 1 < len(linhas):
+                        match_prox = re.search(regex_valor, linhas[i+1])
+                        if match_prox: 
+                            valor_capturado = limpar_valor_monetario(match_prox.group(0))
                     
-                    if v != 0.0 and abs(v) < 50000000:
-                         rendimento_total += v 
-                         leu_rendimento_deste_fundo = True
+                    if valor_capturado != 0 and valor_capturado < 50000000:
+                         rendimento_total += valor_capturado # <-- Mantém a soma
+                         leu_rendimento_deste_fundo = True   # <-- Trava para ignorar o próximo rendimento deste mesmo fundo
 
         if saldo_final == 0.0 and ("NAO HOUVE MOVIMENTO" in texto_completo.upper() or "SEM MOVIMENTO" in texto_completo.upper()):
              match_ant = re.search(r"(?:SALDO ANTERIOR|SALDO).*?(\d{1,3}(?:\.\d{3})*,\d{2})", texto_completo, re.IGNORECASE | re.DOTALL)
-             if match_ant: saldo_final = extrair_valor_monetario_flex(match_ant.group(0))
+             if match_ant: saldo_final = limpar_valor_monetario(match_ant.group(1))
 
         if saldo_final == 0.0 and tipo_extrato == 'INV':
-            match_last = re.findall(r"(?:TOTAL|SALDO|ATUAL|LÍQUIDO).*?(-?\d{1,3}(?:\.\d{3})*,\d{2})(?!\d)", texto_completo, re.IGNORECASE | re.DOTALL)
-            if match_last: saldo_final = extrair_valor_monetario_flex(match_last[-1])
+            match_last = re.findall(r"(?:TOTAL|SALDO|ATUAL|LÍQUIDO).*?(\d{1,3}(?:\.\d{3})*,\d{2})", texto_completo, re.IGNORECASE)
+            if match_last: saldo_final = limpar_valor_monetario(match_last[-1])
 
         texto_limpo = texto_completo[:300].replace('\n', ' ').replace(';', ',')
         return {"Conta": conta_encontrada, "Saldo": saldo_final, "Rendimento": rendimento_total, "Texto_Raw": texto_limpo}
@@ -208,32 +179,18 @@ def extrair_pdf_melhorado(arquivo, tipo_extrato):
         return {"Conta": "Erro", "Saldo": 0.0, "Rendimento": 0.0, "Texto_Raw": str(e)}
 
 def carregar_depara():
-    import streamlit as st
-    
     diretorio_atual = os.path.dirname(os.path.abspath(__file__))
     caminho_arquivo = os.path.join(diretorio_atual, "depara", "DEPARA_CONTAS BANCÁRIAS_CEF.xlsx")
-    
     try:
         df_depara = pd.read_excel(caminho_arquivo, sheet_name="2025_JUNHO (2)", dtype=str, engine='openpyxl')
-        
-        if len(df_depara.columns) != 2:
-            df_depara = df_depara.iloc[:, :2]
-            
         df_depara.columns = ['Conta Antiga', 'Conta Nova']
-        
-        df_depara['Chave Antiga'] = df_depara['Conta Antiga'].apply(gerar_chave_padronizada)
-        df_depara['Chave Nova'] = df_depara['Conta Nova'].apply(gerar_chave_padronizada)
-        
-        # BLINDAGEM: Remove linhas em branco que podem bugar a criação do dicionário
-        df_depara = df_depara.dropna(subset=['Chave Antiga', 'Chave Nova'])
-        
+        if 'gerar_chave_padronizada' in globals():
+            df_depara['Chave Antiga'] = df_depara['Conta Antiga'].apply(gerar_chave_padronizada)
+            df_depara['Chave Nova'] = df_depara['Conta Nova'].apply(gerar_chave_padronizada)
+        else:
+            return pd.DataFrame()
         return df_depara
-        
-    except FileNotFoundError:
-        st.error(f"⚠️ O arquivo De-Para não foi encontrado neste caminho:\n{caminho_arquivo}")
-        return pd.DataFrame()
-    except Exception as e:
-        st.error(f"⚠️ Erro ao tentar ler a planilha De-Para:\n{e}")
+    except (FileNotFoundError, Exception):
         return pd.DataFrame()
 
 # ==========================================
@@ -313,18 +270,24 @@ def processar_contabil(arquivo, tipo='SALDO'):
 # 4. CONSOLIDAÇÃO, DE-PARA E CLASSIFICAÇÃO
 # ==========================================
 def identificar_banco_por_texto(row):
+    # 1. Se veio do PDF, já temos certeza
     if pd.notna(row.get('Nome_Banco')) and str(row.get('Nome_Banco')) not in ['0', '0.0', 'nan', 'None']:
         return str(row['Nome_Banco']).upper()
     
+    # Prepara texto do ERP para análise
     desc = str(row.get('Descrição_ERP', '')).upper()
     
+    # 2. Busca por palavras-chave explícitas
     if 'BRASIL' in desc or 'BB ' in desc or 'BCO DO BRASIL' in desc:
         return "BANCO DO BRASIL"
     elif 'CAIXA' in desc or 'CEF' in desc or 'FEDERAL' in desc or 'ECONÔMICA' in desc:
         return "CAIXA ECONÔMICA"
     
-    if '001' in desc: return "BANCO DO BRASIL"
-    if '104' in desc: return "CAIXA ECONÔMICA"
+    # 3. Busca por CÓDIGOS BANCÁRIOS
+    if '001' in desc:
+        return "BANCO DO BRASIL"
+    if '104' in desc:
+        return "CAIXA ECONÔMICA"
     
     return desc
 
@@ -334,26 +297,15 @@ def executar_processo(file_saldos, file_rendim, lista_arquivos_bancarios):
     
     if df_saldos.empty:
         st.error("Erro na leitura do CSV de Saldos.")
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame()
 
     df_depara = carregar_depara()
     
     if not df_depara.empty:
         dicionario_depara = dict(zip(df_depara['Chave Antiga'], df_depara['Chave Nova']))
-        
-        # --- APLICA O DE-PARA USANDO MAP (Blindagem contra falha silenciosa do Pandas) ---
-        df_saldos['Chave Primaria'] = df_saldos['Chave Primaria'].map(lambda x: dicionario_depara.get(x, x))
-        df_saldos = df_saldos.groupby('Chave Primaria', as_index=False).agg({
-            'Saldo_Contabil_CC': 'sum',
-            'Saldo_Contabil_Aplic': 'sum',
-            'Descrição_ERP': 'first'
-        })
-        
+        df_saldos['Chave Primaria'] = df_saldos['Chave Primaria'].replace(dicionario_depara)
         if not df_rendim.empty:
-            df_rendim['Chave Primaria'] = df_rendim['Chave Primaria'].map(lambda x: dicionario_depara.get(x, x))
-            df_rendim = df_rendim.groupby('Chave Primaria', as_index=False).agg({
-                'Rendimento_Contabil': 'sum'
-            })
+            df_rendim['Chave Primaria'] = df_rendim['Chave Primaria'].replace(dicionario_depara)
 
     df_contabil = df_saldos
     if not df_rendim.empty:
@@ -393,13 +345,7 @@ def executar_processo(file_saldos, file_rendim, lista_arquivos_bancarios):
     df_log = pd.DataFrame(log_leitura)
     
     if dados_banco:
-        df_banco = pd.DataFrame(dados_banco)
-        
-        # Blindagem extra no banco com map
-        if not df_depara.empty:
-             df_banco['Chave Primaria'] = df_banco['Chave Primaria'].map(lambda x: dicionario_depara.get(x, x))
-             
-        df_banco = df_banco.groupby('Chave Primaria').agg({
+        df_banco = pd.DataFrame(dados_banco).groupby('Chave Primaria').agg({
             'Saldo_Banco_CC': 'sum',
             'Saldo_Banco_Aplic': 'sum',
             'Rendimento_Banco': 'sum',
@@ -411,6 +357,7 @@ def executar_processo(file_saldos, file_rendim, lista_arquivos_bancarios):
     df_final = pd.merge(df_contabil, df_banco, on='Chave Primaria', how='outer').fillna(0)
 
     df_final['Descrição'] = df_final.apply(identificar_banco_por_texto, axis=1)
+    
     df_final['Descrição'] = df_final['Descrição'].astype(str).str.upper().replace(['NAN', 'NONE', '0', ''], '-')
 
     df_final['Diferenca_Saldo_CC'] = df_final['Saldo_Contabil_CC'] - df_final['Saldo_Banco_CC']
@@ -421,20 +368,21 @@ def executar_processo(file_saldos, file_rendim, lista_arquivos_bancarios):
             'Saldo_Contabil_Aplic', 'Saldo_Banco_Aplic', 'Diferenca_Saldo_Aplic',
             'Rendimento_Contabil', 'Rendimento_Banco', 'Diferenca_Rendimento']
     colunas_finais = [c for c in cols if c in df_final.columns]
-    
-    return df_final[colunas_finais], df_log, df_depara 
+    return df_final[colunas_finais], df_log
 
 # ==========================================
 # 5. GERADORES DE ARQUIVO (Excel e PDF)
 # ==========================================
 
 def to_excel_styled(df):
+    """Gera Excel com formatação profissional, bordas e cores."""
     output = io.BytesIO()
     
     wb = Workbook()
     ws = wb.active
     ws.title = "Conciliação"
 
+    # Estilos
     header_fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
     header_font = Font(bold=True, name="Calibri", size=11)
     border_style = Side(border_style="thin", color="000000")
@@ -442,9 +390,11 @@ def to_excel_styled(df):
     alignment_center = Alignment(horizontal="center", vertical="center")
     number_fmt = '#,##0.00'
     
+    # Extrai headers do MultiIndex
     headers_lvl0 = [c[0] for c in df.columns]
     headers_lvl1 = [c[1] for c in df.columns]
     
+    # Escreve Linha 1 (Categorias)
     for col_idx, header in enumerate(headers_lvl0, 1):
         cell = ws.cell(row=1, column=col_idx, value=header)
         cell.fill = header_fill
@@ -452,6 +402,7 @@ def to_excel_styled(df):
         cell.alignment = alignment_center
         cell.border = thin_border
     
+    # Escreve Linha 2 (Detalhes)
     for col_idx, header in enumerate(headers_lvl1, 1):
         cell = ws.cell(row=2, column=col_idx, value=header)
         cell.fill = header_fill
@@ -459,12 +410,14 @@ def to_excel_styled(df):
         cell.alignment = alignment_center
         cell.border = thin_border
 
+    # Escreve Dados
     rows = dataframe_to_rows(df, index=False, header=False)
     for r_idx, row in enumerate(rows, 3):
         for c_idx, value in enumerate(row, 1):
             cell = ws.cell(row=r_idx, column=c_idx, value=value)
             cell.border = thin_border
             
+            # Formatação Numérica
             if isinstance(value, (int, float)):
                 cell.number_format = number_fmt
                 if value < -0.01:
@@ -474,6 +427,7 @@ def to_excel_styled(df):
                 if "Diferença" in header_name and abs(value) > 0.01:
                      cell.font = Font(color="FF0000", bold=True)
             
+    # Ajuste de largura das colunas
     for i in range(1, len(df.columns) + 1):
         ws.column_dimensions[get_column_letter(i)].width = 18
 
@@ -481,21 +435,26 @@ def to_excel_styled(df):
     return output.getvalue()
 
 def to_pdf(df):
+    """Gera PDF em paisagem com tabela zebrada."""
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=landscape(letter), rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=18)
     
     elements = []
     
+    # Título
     styles = getSampleStyleSheet()
     title_style = styles['Heading1']
-    title_style.alignment = 1 
+    title_style.alignment = 1 # Center
     elements.append(Paragraph("Relatório de Conciliação Contábil", title_style))
     elements.append(Spacer(1, 12))
 
+    # Prepara dados para o ReportLab
+    # Achata o cabeçalho MultiIndex
     headers = [f"{c[0]}\n{c[1]}" for c in df.columns]
     
     data = [headers]
     
+    # Converte dados do DF para lista
     for index, row in df.iterrows():
         row_list = []
         for col_name, val in row.items():
@@ -505,9 +464,12 @@ def to_pdf(df):
                 row_list.append(str(val))
         data.append(row_list)
 
+    # Cria Tabela
+    # Colunas: Desc(100), Conta(60), Resto(70)
     col_widths = [100, 60] + [70] * 9 
     t = Table(data, colWidths=None)
 
+    # Estilo da Tabela
     style = TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
@@ -522,6 +484,7 @@ def to_pdf(df):
         ('ALIGN', (2, 1), (-1, -1), 'RIGHT'), 
     ])
     
+    # Zebra
     for i in range(1, len(data)):
         if i % 2 == 0:
             bg_color = colors.whitesmoke
@@ -529,6 +492,7 @@ def to_pdf(df):
             bg_color = colors.white
         style.add('BACKGROUND', (0, i), (-1, i), bg_color)
         
+        # Pinta texto de vermelho se negativo
         for j, val in enumerate(data[i]):
             if j > 1 and ("-" in val or "(" in val) and val != "0,00":
                  style.add('TEXTCOLOR', (j, i), (j, i), colors.red)
@@ -582,7 +546,7 @@ if btn_processar:
             for f in f_caixa_inv: lista_arquivos.append({'arquivo': f, 'banco': 'CAIXA ECONÔMICA', 'tipo': 'INV'})
         
         with st.spinner("Lendo arquivos e cruzando dados..."):
-            df_final, df_log, df_depara = executar_processo(f_saldos, f_rendim, lista_arquivos)
+            df_final, df_log = executar_processo(f_saldos, f_rendim, lista_arquivos)
             
             if not df_final.empty:
                 df_display = df_final.copy()
@@ -609,8 +573,7 @@ if btn_processar:
                 for col in numeric_cols: df_formatado[col] = df_formatado[col].apply(formatar_moeda_br)
 
                 st.success("Processamento concluído.")
-                
-                tab1, tab2, tab3, tab4 = st.tabs(["📊 Visão Geral", "🚨 Apenas Divergências", "📝 Log de Leitura", "🔄 Mapa De-Para"])
+                tab1, tab2, tab3 = st.tabs(["📊 Visão Geral", "🚨 Apenas Divergências", "📝 Log de Leitura"])
                 
                 with tab1:
                     st.dataframe(df_formatado, use_container_width=True, height=500)
@@ -630,13 +593,6 @@ if btn_processar:
                 
                 with tab3:
                     st.dataframe(df_log, use_container_width=True)
-                    
-                with tab4:
-                    if not df_depara.empty:
-                        st.success(f"✅ De-Para processado! {len(df_depara)} mapeamentos realizados.")
-                        st.dataframe(df_depara, use_container_width=True)
-                        st.info("⚠️ Se você ver duas contas separadas na Visão Geral que deveriam estar juntas, verifique as colunas **Chave Antiga** e **Chave Nova** abaixo. Os números precisam ser exatamente iguais aos 7 últimos dígitos gerados na coluna **Conta Reduzida** da Visão Geral.")
-                    else:
-                        st.error("⚠️ De-Para retornou VAZIO. Verifique as mensagens de erro.")
             else:
                 st.error("O processamento não retornou dados.")
+
