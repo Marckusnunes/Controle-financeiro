@@ -6,7 +6,7 @@ import os
 import fitz  # PyMuPDF
 from openpyxl import Workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
-from openpyxl.utils import get_column_letter # <--- Faltava esta linha
+from openpyxl.utils import get_column_letter
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter, landscape
@@ -94,10 +94,10 @@ def extrair_pdf_melhorado(arquivo, tipo_extrato):
         padroes_conta = [
             r"Conta:\s*(\d{4}\/\d{3,4}\/[\d\-]+)", 
             r"Conta\s*Vinculada:\s*(\d{4}\/\d{3,4}\/[\d\-]+)", 
-            r"Conta\s*Corrente\s*[:\s]*([\d\.\-\/]+)",    
+            r"Conta\s*Corrente\s*[:\s]*([\d\.\-\/]+)",   
             r"Conta\s*[:\s]*([\d\.\-\/]+)",                
-            r"Agência.*?Conta.*?([\d\.\-]{5,})",           
-            r"C\/C\s*[:\s]*([\d\.\-\/]+)"                  
+            r"Agência.*?Conta.*?([\d\.\-]{5,})",            
+            r"C\/C\s*[:\s]*([\d\.\-\/]+)"                 
         ]
         
         for p in padroes_conta:
@@ -312,7 +312,7 @@ def executar_processo(file_saldos, file_rendim, lista_arquivos_bancarios):
     
     if df_saldos.empty:
         st.error("Erro na leitura do CSV de Saldos.")
-        return pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
     df_depara = carregar_depara()
     
@@ -383,7 +383,8 @@ def executar_processo(file_saldos, file_rendim, lista_arquivos_bancarios):
             'Saldo_Contabil_Aplic', 'Saldo_Banco_Aplic', 'Diferenca_Saldo_Aplic',
             'Rendimento_Contabil', 'Rendimento_Banco', 'Diferenca_Rendimento']
     colunas_finais = [c for c in cols if c in df_final.columns]
-    return df_final[colunas_finais], df_log
+    
+    return df_final[colunas_finais], df_log, df_depara # <-- Retorna a nova variável aqui
 
 # ==========================================
 # 5. GERADORES DE ARQUIVO (Excel e PDF)
@@ -561,7 +562,7 @@ if btn_processar:
             for f in f_caixa_inv: lista_arquivos.append({'arquivo': f, 'banco': 'CAIXA ECONÔMICA', 'tipo': 'INV'})
         
         with st.spinner("Lendo arquivos e cruzando dados..."):
-            df_final, df_log = executar_processo(f_saldos, f_rendim, lista_arquivos)
+            df_final, df_log, df_depara = executar_processo(f_saldos, f_rendim, lista_arquivos) # <-- Atualizado
             
             if not df_final.empty:
                 df_display = df_final.copy()
@@ -588,7 +589,9 @@ if btn_processar:
                 for col in numeric_cols: df_formatado[col] = df_formatado[col].apply(formatar_moeda_br)
 
                 st.success("Processamento concluído.")
-                tab1, tab2, tab3 = st.tabs(["📊 Visão Geral", "🚨 Apenas Divergências", "📝 Log de Leitura"])
+                
+                # --- NOVA ABA ADICIONADA AQUI ---
+                tab1, tab2, tab3, tab4 = st.tabs(["📊 Visão Geral", "🚨 Apenas Divergências", "📝 Log de Leitura", "🔄 Mapa De-Para"])
                 
                 with tab1:
                     st.dataframe(df_formatado, use_container_width=True, height=500)
@@ -608,5 +611,13 @@ if btn_processar:
                 
                 with tab3:
                     st.dataframe(df_log, use_container_width=True)
+                    
+                # --- CONTEÚDO DA NOVA ABA ---
+                with tab4:
+                    if not df_depara.empty:
+                        st.success(f"✅ De-Para processado! {len(df_depara)} mapeamentos realizados.")
+                        st.dataframe(df_depara, use_container_width=True)
+                    else:
+                        st.error("⚠️ De-Para retornou VAZIO. Verifique as mensagens de erro.")
             else:
                 st.error("O processamento não retornou dados.")
