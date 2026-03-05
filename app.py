@@ -117,36 +117,53 @@ def extrair_pdf_melhorado(arquivo, tipo_extrato):
         rendimento_total = 0.0
         regex_valor = r"(\d{1,3}(?:\.\d{3})*,\d{2}|\d{1,3}(?:,\d{3})*\.\d{2})"
 
+       # Variável de controle para não somar o Rendimento Bruto e Líquido do mesmo fundo
+        leu_rendimento_deste_fundo = False
+
         for i, linha in enumerate(linhas):
             linha_upper = linha.upper().strip()
             
-            gatilhos_saldo = ["SALDO FINAL", "SALDO TOTAL", "SALDO ATUAL", "SALDO EM", "SALDO LÍQUIDO", "SALDO BRUTO", "VALOR LIQUIDO", "TOTAL DISPONIVEL", "POSICAO EM", "TOTAL EM COTAS", "S A L D O"]
-            ignorar = ["ANTERIOR", "BLOQUEADO", "PROVISORIO", "RENDIMENTO", "RENTABILIDADE"]
+            # Identifica o início de um novo bloco de fundo/conta e reseta a trava
+            if "SALDO ANTERIOR" in linha_upper:
+                leu_rendimento_deste_fundo = False
             
-            if any(g in linha_upper for g in gatilhos_saldo) and not any(ign in linha_upper for ign in ignorar):
+            # --- 1. CAPTURA DE SALDO FINAL (COM SOMA) ---
+            gatilhos_saldo = ["SALDO FINAL", "SALDO TOTAL", "SALDO ATUAL", "SALDO EM", "SALDO LÍQUIDO", "SALDO BRUTO", "VALOR LIQUIDO", "TOTAL DISPONIVEL", "POSICAO EM", "TOTAL EM COTAS", "S A L D O"]
+            
+            # Adicionado "=" para ignorar a linha "SALDO ATUAL =" do resumo do BB e evitar duplicidade
+            ignorar_saldo = ["ANTERIOR", "BLOQUEADO", "PROVISORIO", "RENDIMENTO", "RENTABILIDADE", "="]
+            
+            if any(g in linha_upper for g in gatilhos_saldo) and not any(ign in linha_upper for ign in ignorar_saldo):
                 match_val = re.search(regex_valor, linha_upper)
+                v = 0.0
                 if match_val:
                     sinal = "-" if " D" in linha_upper or "DEB" in linha_upper or "-" in linha_upper else ""
                     v = limpar_valor_monetario(f"{sinal}{match_val.group(0)}")
-                    if v != 0: saldo_final = v
                 elif i + 1 < len(linhas):
                     match_prox = re.search(regex_valor, linhas[i+1])
                     if match_prox:
                         v = limpar_valor_monetario(match_prox.group(0))
-                        if v != 0: saldo_final = v
-
-            if tipo_extrato == 'INV':
+                
+                if v != 0: 
+                    saldo_final += v  # <-- Agora soma corretamente saldos de fundos diferentes
+                    
+            # --- 2. CAPTURA DE RENDIMENTO (COM TRAVA ANTI-DUPLICIDADE) ---
+            if tipo_extrato == 'INV' and not leu_rendimento_deste_fundo:
                 gatilhos_rend = ["RENDIMENTO BRUTO", "RENTABILIDADE", "RENDIMENTO NO MÊS", "RENDIMENTO LIQUIDO", "RENTAB."]
+                
                 if any(g in linha_upper for g in gatilhos_rend) and "ACUMULADO" not in linha_upper and "ANO" not in linha_upper:
                     valor_capturado = 0.0
                     match_val = re.search(regex_valor, linha)
-                    if match_val: valor_capturado = limpar_valor_monetario(match_val.group(0))
+                    if match_val: 
+                        valor_capturado = limpar_valor_monetario(match_val.group(0))
                     elif i + 1 < len(linhas):
                         match_prox = re.search(regex_valor, linhas[i+1])
-                        if match_prox: valor_capturado = limpar_valor_monetario(match_prox.group(0))
+                        if match_prox: 
+                            valor_capturado = limpar_valor_monetario(match_prox.group(0))
                     
                     if valor_capturado != 0 and valor_capturado < 50000000:
-                         rendimento_total += valor_capturado
+                         rendimento_total += valor_capturado # <-- Mantém a soma
+                         leu_rendimento_deste_fundo = True   # <-- Trava para ignorar o próximo rendimento deste mesmo fundo
 
         if saldo_final == 0.0 and ("NAO HOUVE MOVIMENTO" in texto_completo.upper() or "SEM MOVIMENTO" in texto_completo.upper()):
              match_ant = re.search(r"(?:SALDO ANTERIOR|SALDO).*?(\d{1,3}(?:\.\d{3})*,\d{2})", texto_completo, re.IGNORECASE | re.DOTALL)
