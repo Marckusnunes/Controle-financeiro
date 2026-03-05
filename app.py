@@ -82,7 +82,6 @@ def extrair_valor_monetario_flex(texto):
     Função blindada para o layout da Caixa Econômica e Banco do Brasil.
     Evita misturar cotas com moeda e lida perfeitamente com 3.952,38C ou 123,45D.
     """
-    # Regex pega o valor (garante que acaba em 2 casas decimais e não é seguido de outro dígito para ignorar cotas)
     match = re.search(r"(-?\d{1,3}(?:\.\d{3})*,\d{2})(?!\d)\s*([CDcd\-])?", texto)
     if not match: return 0.0
     
@@ -220,6 +219,7 @@ def carregar_depara():
     try:
         df_depara = pd.read_excel(caminho_arquivo, sheet_name="2025_JUNHO (2)", dtype=str, engine='openpyxl')
         
+        # Blindagem contra colunas sujas do Excel
         if len(df_depara.columns) != 2:
             df_depara = df_depara.iloc[:, :2]
             
@@ -314,24 +314,18 @@ def processar_contabil(arquivo, tipo='SALDO'):
 # 4. CONSOLIDAÇÃO, DE-PARA E CLASSIFICAÇÃO
 # ==========================================
 def identificar_banco_por_texto(row):
-    # 1. Se veio do PDF, já temos certeza
     if pd.notna(row.get('Nome_Banco')) and str(row.get('Nome_Banco')) not in ['0', '0.0', 'nan', 'None']:
         return str(row['Nome_Banco']).upper()
     
-    # Prepara texto do ERP para análise
     desc = str(row.get('Descrição_ERP', '')).upper()
     
-    # 2. Busca por palavras-chave explícitas
     if 'BRASIL' in desc or 'BB ' in desc or 'BCO DO BRASIL' in desc:
         return "BANCO DO BRASIL"
     elif 'CAIXA' in desc or 'CEF' in desc or 'FEDERAL' in desc or 'ECONÔMICA' in desc:
         return "CAIXA ECONÔMICA"
     
-    # 3. Busca por CÓDIGOS BANCÁRIOS
-    if '001' in desc:
-        return "BANCO DO BRASIL"
-    if '104' in desc:
-        return "CAIXA ECONÔMICA"
+    if '001' in desc: return "BANCO DO BRASIL"
+    if '104' in desc: return "CAIXA ECONÔMICA"
     
     return desc
 
@@ -347,9 +341,21 @@ def executar_processo(file_saldos, file_rendim, lista_arquivos_bancarios):
     
     if not df_depara.empty:
         dicionario_depara = dict(zip(df_depara['Chave Antiga'], df_depara['Chave Nova']))
+        
+        # --- 1. APLICA O DE-PARA E FUNDE AS LINHAS DO SALDO CONTÁBIL ---
         df_saldos['Chave Primaria'] = df_saldos['Chave Primaria'].replace(dicionario_depara)
+        df_saldos = df_saldos.groupby('Chave Primaria', as_index=False).agg({
+            'Saldo_Contabil_CC': 'sum',
+            'Saldo_Contabil_Aplic': 'sum',
+            'Descrição_ERP': 'first' # Mantém o nome da conta original
+        })
+        
+        # --- 2. APLICA O DE-PARA E FUNDE AS LINHAS DE RENDIMENTO ---
         if not df_rendim.empty:
             df_rendim['Chave Primaria'] = df_rendim['Chave Primaria'].replace(dicionario_depara)
+            df_rendim = df_rendim.groupby('Chave Primaria', as_index=False).agg({
+                'Rendimento_Contabil': 'sum'
+            })
 
     df_contabil = df_saldos
     if not df_rendim.empty:
@@ -389,7 +395,13 @@ def executar_processo(file_saldos, file_rendim, lista_arquivos_bancarios):
     df_log = pd.DataFrame(log_leitura)
     
     if dados_banco:
-        df_banco = pd.DataFrame(dados_banco).groupby('Chave Primaria').agg({
+        df_banco = pd.DataFrame(dados_banco)
+        
+        # --- 3. BLINDAGEM EXTRA: Aplica o De-Para no banco também ---
+        if not df_depara.empty:
+             df_banco['Chave Primaria'] = df_banco['Chave Primaria'].replace(dicionario_depara)
+             
+        df_banco = df_banco.groupby('Chave Primaria').agg({
             'Saldo_Banco_CC': 'sum',
             'Saldo_Banco_Aplic': 'sum',
             'Rendimento_Banco': 'sum',
@@ -420,7 +432,6 @@ def executar_processo(file_saldos, file_rendim, lista_arquivos_bancarios):
 # ==========================================
 
 def to_excel_styled(df):
-    """Gera Excel com formatação profissional, bordas e cores."""
     output = io.BytesIO()
     
     wb = Workbook()
@@ -473,7 +484,6 @@ def to_excel_styled(df):
     return output.getvalue()
 
 def to_pdf(df):
-    """Gera PDF em paisagem com tabela zebrada."""
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=landscape(letter), rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=18)
     
