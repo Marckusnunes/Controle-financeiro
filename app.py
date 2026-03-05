@@ -179,18 +179,33 @@ def extrair_pdf_melhorado(arquivo, tipo_extrato):
         return {"Conta": "Erro", "Saldo": 0.0, "Rendimento": 0.0, "Texto_Raw": str(e)}
 
 def carregar_depara():
+    import streamlit as st # Garante que os avisos de erro funcionem aqui dentro
+    
     diretorio_atual = os.path.dirname(os.path.abspath(__file__))
     caminho_arquivo = os.path.join(diretorio_atual, "depara", "DEPARA_CONTAS BANCÁRIAS_CEF.xlsx")
+    
     try:
+        # Tenta ler a aba específica que você mencionou
         df_depara = pd.read_excel(caminho_arquivo, sheet_name="2025_JUNHO (2)", dtype=str, engine='openpyxl')
+        
+        # BLINDAGEM 1: Ignora colunas extras "sujas" que o Excel possa ter criado sem querer
+        if len(df_depara.columns) != 2:
+            df_depara = df_depara.iloc[:, :2]
+            
         df_depara.columns = ['Conta Antiga', 'Conta Nova']
-        if 'gerar_chave_padronizada' in globals():
-            df_depara['Chave Antiga'] = df_depara['Conta Antiga'].apply(gerar_chave_padronizada)
-            df_depara['Chave Nova'] = df_depara['Conta Nova'].apply(gerar_chave_padronizada)
-        else:
-            return pd.DataFrame()
+        
+        # BLINDAGEM 2: Removemos o globals() que costuma falhar no Streamlit
+        df_depara['Chave Antiga'] = df_depara['Conta Antiga'].apply(gerar_chave_padronizada)
+        df_depara['Chave Nova'] = df_depara['Conta Nova'].apply(gerar_chave_padronizada)
+        
         return df_depara
-    except (FileNotFoundError, Exception):
+        
+    except FileNotFoundError:
+        st.error(f"⚠️ O arquivo De-Para não foi encontrado neste caminho:\n{caminho_arquivo}")
+        return pd.DataFrame()
+    except Exception as e:
+        # Se houver qualquer outro problema, o Streamlit vai te avisar em vermelho na tela
+        st.error(f"⚠️ Erro ao tentar ler a planilha De-Para:\n{e}")
         return pd.DataFrame()
 
 # ==========================================
