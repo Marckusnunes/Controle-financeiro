@@ -150,11 +150,10 @@ def extrair_pdf_melhorado(arquivo, tipo_extrato):
         for i, linha in enumerate(linhas):
             linha_upper = linha.upper().strip()
             
-            # Identifica o início de um novo bloco de fundo/conta e reseta a trava
             if "SALDO ANTERIOR" in linha_upper:
                 leu_rendimento_deste_fundo = False
             
-            # --- 1. CAPTURA DE SALDO FINAL (COM SOMA E LOOKAHEAD) ---
+            # --- 1. CAPTURA DE SALDO FINAL ---
             gatilhos_saldo = ["SALDO FINAL", "SALDO TOTAL", "SALDO ATUAL", "SALDO EM", "SALDO LÍQUIDO", "SALDO BRUTO", "VALOR LIQUIDO", "TOTAL DISPONIVEL", "POSICAO EM", "TOTAL EM COTAS", "S A L D O"]
             ignorar_saldo = ["ANTERIOR", "BLOQUEADO", "PROVISORIO", "RENDIMENTO", "RENTABILIDADE", "="]
             
@@ -163,7 +162,6 @@ def extrair_pdf_melhorado(arquivo, tipo_extrato):
                 if re.search(r"\d", linha_upper):
                     v = extrair_valor_monetario_flex(linha_upper)
                 
-                # Se não achou na linha, caça o valor nas próximas 4 linhas! Resolve PDFs desconfigurados da Caixa
                 if v == 0.0:
                     for j in range(1, 5):
                         if i + j < len(linhas):
@@ -175,7 +173,7 @@ def extrair_pdf_melhorado(arquivo, tipo_extrato):
                 if v != 0.0: 
                     saldo_final += v  
                     
-            # --- 2. CAPTURA DE RENDIMENTO (COM SOMA E LOOKAHEAD) ---
+            # --- 2. CAPTURA DE RENDIMENTO ---
             if tipo_extrato == 'INV' and not leu_rendimento_deste_fundo:
                 gatilhos_rend = ["RENDIMENTO BRUTO", "RENTABILIDADE", "RENDIMENTO NO MÊS", "RENDIMENTO LIQUIDO", "RENTAB."]
                 
@@ -196,7 +194,6 @@ def extrair_pdf_melhorado(arquivo, tipo_extrato):
                          rendimento_total += v 
                          leu_rendimento_deste_fundo = True
 
-        # Trata PDFs zerados/sem movimento
         if saldo_final == 0.0 and ("NAO HOUVE MOVIMENTO" in texto_completo.upper() or "SEM MOVIMENTO" in texto_completo.upper()):
              match_ant = re.search(r"(?:SALDO ANTERIOR|SALDO).*?(\d{1,3}(?:\.\d{3})*,\d{2})", texto_completo, re.IGNORECASE | re.DOTALL)
              if match_ant: saldo_final = extrair_valor_monetario_flex(match_ant.group(0))
@@ -219,7 +216,6 @@ def carregar_depara():
     try:
         df_depara = pd.read_excel(caminho_arquivo, sheet_name="2025_JUNHO (2)", dtype=str, engine='openpyxl')
         
-        # Blindagem contra colunas sujas do Excel
         if len(df_depara.columns) != 2:
             df_depara = df_depara.iloc[:, :2]
             
@@ -227,6 +223,9 @@ def carregar_depara():
         
         df_depara['Chave Antiga'] = df_depara['Conta Antiga'].apply(gerar_chave_padronizada)
         df_depara['Chave Nova'] = df_depara['Conta Nova'].apply(gerar_chave_padronizada)
+        
+        # BLINDAGEM: Remove linhas em branco que podem bugar a criação do dicionário
+        df_depara = df_depara.dropna(subset=['Chave Antiga', 'Chave Nova'])
         
         return df_depara
         
@@ -342,17 +341,16 @@ def executar_processo(file_saldos, file_rendim, lista_arquivos_bancarios):
     if not df_depara.empty:
         dicionario_depara = dict(zip(df_depara['Chave Antiga'], df_depara['Chave Nova']))
         
-        # --- 1. APLICA O DE-PARA E FUNDE AS LINHAS DO SALDO CONTÁBIL ---
-        df_saldos['Chave Primaria'] = df_saldos['Chave Primaria'].replace(dicionario_depara)
+        # --- APLICA O DE-PARA USANDO MAP (Blindagem contra falha silenciosa do Pandas) ---
+        df_saldos['Chave Primaria'] = df_saldos['Chave Primaria'].map(lambda x: dicionario_depara.get(x, x))
         df_saldos = df_saldos.groupby('Chave Primaria', as_index=False).agg({
             'Saldo_Contabil_CC': 'sum',
             'Saldo_Contabil_Aplic': 'sum',
-            'Descrição_ERP': 'first' # Mantém o nome da conta original
+            'Descrição_ERP': 'first'
         })
         
-        # --- 2. APLICA O DE-PARA E FUNDE AS LINHAS DE RENDIMENTO ---
         if not df_rendim.empty:
-            df_rendim['Chave Primaria'] = df_rendim['Chave Primaria'].replace(dicionario_depara)
+            df_rendim['Chave Primaria'] = df_rendim['Chave Primaria'].map(lambda x: dicionario_depara.get(x, x))
             df_rendim = df_rendim.groupby('Chave Primaria', as_index=False).agg({
                 'Rendimento_Contabil': 'sum'
             })
@@ -397,9 +395,9 @@ def executar_processo(file_saldos, file_rendim, lista_arquivos_bancarios):
     if dados_banco:
         df_banco = pd.DataFrame(dados_banco)
         
-        # --- 3. BLINDAGEM EXTRA: Aplica o De-Para no banco também ---
+        # Blindagem extra no banco com map
         if not df_depara.empty:
-             df_banco['Chave Primaria'] = df_banco['Chave Primaria'].replace(dicionario_depara)
+             df_banco['Chave Primaria'] = df_banco['Chave Primaria'].map(lambda x: dicionario_depara.get(x, x))
              
         df_banco = df_banco.groupby('Chave Primaria').agg({
             'Saldo_Banco_CC': 'sum',
@@ -413,7 +411,6 @@ def executar_processo(file_saldos, file_rendim, lista_arquivos_bancarios):
     df_final = pd.merge(df_contabil, df_banco, on='Chave Primaria', how='outer').fillna(0)
 
     df_final['Descrição'] = df_final.apply(identificar_banco_por_texto, axis=1)
-    
     df_final['Descrição'] = df_final['Descrição'].astype(str).str.upper().replace(['NAN', 'NONE', '0', ''], '-')
 
     df_final['Diferenca_Saldo_CC'] = df_final['Saldo_Contabil_CC'] - df_final['Saldo_Banco_CC']
@@ -638,6 +635,7 @@ if btn_processar:
                     if not df_depara.empty:
                         st.success(f"✅ De-Para processado! {len(df_depara)} mapeamentos realizados.")
                         st.dataframe(df_depara, use_container_width=True)
+                        st.info("⚠️ Se você ver duas contas separadas na Visão Geral que deveriam estar juntas, verifique as colunas **Chave Antiga** e **Chave Nova** abaixo. Os números precisam ser exatamente iguais aos 7 últimos dígitos gerados na coluna **Conta Reduzida** da Visão Geral.")
                     else:
                         st.error("⚠️ De-Para retornou VAZIO. Verifique as mensagens de erro.")
             else:
